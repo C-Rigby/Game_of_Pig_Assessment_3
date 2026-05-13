@@ -244,10 +244,130 @@ def boundary_points(policy: np.ndarray) -> np.ndarray:
     return np.asarray(points, dtype=float)
 
 
+def _split_point_segments(points: np.ndarray) -> list[np.ndarray]:
+    """Split sorted ``(i,k)`` points where adjacent player scores are not contiguous."""
+
+    if points.size == 0:
+        return []
+
+    segments: list[np.ndarray] = []
+    start = 0
+
+    for idx in range(1, points.shape[0]):
+        if int(points[idx, 0]) != int(points[idx - 1, 0]) + 1:
+            segments.append(points[start:idx])
+            start = idx
+
+    segments.append(points[start:])
+
+    return segments
+
+
+def _cross_section_transition_segments(
+    policy: np.ndarray,
+    opponent_score: int,
+) -> tuple[np.ndarray, list[dict[str, np.ndarray | int]]]:
+    """Return all action-change boundaries in a fixed-opponent-score slice.
+
+    The older ``hold_boundary`` helper records only the first ``roll -> hold``
+    transition for each score pair. Figure 4 in the paper needs the full
+    cross-section: some columns change action more than once.
+    """
+
+    G = policy.shape[0]
+    transition_rows: list[tuple[float, float, float, float, float]] = []
+    transitions_by_order: dict[int, list[tuple[float, float]]] = {}
+
+    for i in range(G):
+        valid_k = np.where(policy[i, opponent_score, :] >= 0)[0]
+        if valid_k.size < 2:
+            continue
+
+        transition_order = 0
+        previous_k = int(valid_k[0])
+        previous_action = int(policy[i, opponent_score, previous_k])
+
+        for k_value in valid_k[1:]:
+            k = int(k_value)
+            action = int(policy[i, opponent_score, k])
+
+            if action != previous_action:
+                transition_order += 1
+                row = (
+                    float(i),
+                    float(k),
+                    float(previous_action),
+                    float(action),
+                    float(transition_order),
+                )
+                transition_rows.append(row)
+                transitions_by_order.setdefault(transition_order, []).append(
+                    (float(i), float(k))
+                )
+
+            previous_action = action
+
+    segments: list[dict[str, np.ndarray | int]] = []
+
+    for transition_order, points in transitions_by_order.items():
+        ordered = np.asarray(points, dtype=float)
+        ordered = ordered[np.argsort(ordered[:, 0])]
+
+        for segment in _split_point_segments(ordered):
+            segments.append(
+                {
+                    "points": segment,
+                    "transition_order": transition_order,
+                }
+            )
+
+    if transition_rows:
+        transition_points = np.asarray(transition_rows, dtype=float)
+    else:
+        transition_points = np.empty((0, 5), dtype=float)
+
+    return transition_points, segments
+
+
+def _terminal_boundary_segment(policy: np.ndarray) -> np.ndarray:
+    """Return the ``i + k = G`` boundary visible in unrestricted Pig figures."""
+
+    G = policy.shape[0]
+    points = [
+        (float(i), float(G - i))
+        for i in range(1, G + 1)
+        if 0 <= G - i < G
+    ]
+
+    return np.asarray(points, dtype=float)
+
+
+def _standard_pig_spec_for_policy(policy: np.ndarray) -> dict:
+    """Create the minimal Pig spec needed for Figure 4 reachability shading."""
+
+    G = int(policy.shape[0])
+
+    return {
+        "name": f"pig_goal_{G}",
+        "game": "pig",
+        "target_score": G,
+        "continue_action": "roll",
+        "hold_action": "hold",
+        "bust_probability": 1.0 / 6.0,
+        "gain_outcomes": (2, 3, 4, 5, 6),
+        "gain_probabilities": (1.0 / 6.0,) * 5,
+    }
+
+
 def cross_section_boundary(
     policy: np.ndarray,
     opponent_score: int = 30,
-) -> dict[str, np.ndarray]:
+    spec: Optional[dict] = None,
+    reachable: Optional[np.ndarray] = None,
+    restricted_k: Optional[bool] = None,
+    opponent_mode: str = "any",
+    include_reachable: bool = True,
+) -> dict[str, object]:
     """Extract a fixed-opponent-score boundary section.
 
     Args:
@@ -255,13 +375,43 @@ def cross_section_boundary(
             Policy table.
         opponent_score:
             Fixed value of j. The paper uses j=30 in Figure 4.
+        spec:
+            Optional game specification. If omitted, a standard one-die Pig
+            spec is inferred from ``policy.shape[0]`` for Figure 4 shading.
+        reachable:
+            Optional precomputed reachable mask with shape ``(G,G,G)``.
+        restricted_k:
+            Whether reachability should use the restricted state space. If
+            omitted, this is inferred from whether ``policy`` contains invalid
+            entries.
+        opponent_mode:
+            Passed to ``reachable_states_for_optimal_player`` when reachable
+            shading is computed here.
+        include_reachable:
+            Whether to include the Figure 4 reachable-state cross-section.
 
     Returns:
         Dictionary with:
             player_score:
                 Array of i values.
             boundary_k:
-                First k where holding is optimal for each i.
+                First k where holding is optimal for each i. This is retained
+                for backwards compatibility.
+            transition_points:
+                Rows ``(i, k, from_action, to_action, transition_order)`` for
+                every action change in the cross-section.
+            boundary_segments:
+                Contiguous action-change segments ready for plotting.
+            terminal_boundary:
+                Points on ``i + k = G``. This is the upper diagonal visible in
+                the paper's unrestricted Figure 4.
+            hold_mask:
+                Boolean ``(i,k)`` mask for hold states in this cross-section.
+                The paper-style plot uses this to draw continuous region
+                contours instead of disconnected transition samples.
+            reachable_mask:
+                Boolean ``(i,k)`` mask for the selected opponent score, or
+                ``None`` if reachability was not requested.
             opponent_score:
                 The fixed j value.
     """
@@ -272,9 +422,36 @@ def cross_section_boundary(
     if not 0 <= opponent_score < G:
         raise ValueError(f"opponent_score must be in [0,{G-1}]")
 
+    transition_points, boundary_segments = _cross_section_transition_segments(
+        policy,
+        opponent_score,
+    )
+
+    if restricted_k is None:
+        restricted_k = bool(np.any(policy < 0))
+
+    reachable_mask = None
+
+    if include_reachable:
+        if reachable is None:
+            reach_spec = spec if spec is not None else _standard_pig_spec_for_policy(policy)
+            reachable = reachable_states_for_optimal_player(
+                reach_spec,
+                policy,
+                restricted_k=restricted_k,
+                opponent_mode=opponent_mode,
+            )
+
+        reachable_mask = reachable[:, opponent_score, :]
+
     return {
         "player_score": np.arange(G),
         "boundary_k": B[:, opponent_score],
+        "transition_points": transition_points,
+        "boundary_segments": boundary_segments,
+        "terminal_boundary": _terminal_boundary_segment(policy),
+        "hold_mask": policy[:, opponent_score, :] == 0,
+        "reachable_mask": reachable_mask,
         "opponent_score": opponent_score,
     }
 
@@ -339,6 +516,7 @@ def _expand_actual_state(
     policy: np.ndarray,
     actual: ActualState,
     opponent_mode: str,
+    restricted_k: bool,
 ) -> list[ActualState]:
     """Expand one actual game state for reachability analysis.
 
@@ -367,7 +545,7 @@ def _expand_actual_state(
         if score0 + k >= G:
             return []
 
-        if not vi.is_valid_state(spec, score0, score1, k):
+        if not vi.is_valid_state(spec, score0, score1, k, restricted_k = restricted_k):
             return []
 
         action_code = int(policy[score0, score1, k])
@@ -422,6 +600,7 @@ def _expand_actual_state(
 def reachable_states_for_optimal_player(
     spec: dict,
     policy: np.ndarray,
+    restricted_k: bool,
     opponent_mode: str = "any",
 ) -> np.ndarray:
     """Compute states reachable for player 0 when player 0 follows policy.
@@ -459,10 +638,10 @@ def reachable_states_for_optimal_player(
         actual = queue.popleft()
         score0, score1, k, player = actual
 
-        if player == 0 and vi.is_valid_state(spec, score0, score1, k):
+        if player == 0 and vi.is_valid_state(spec, score0, score1, k, restricted_k = restricted_k):
             reachable[score0, score1, k] = True
 
-        for nxt in _expand_actual_state(spec, policy, actual, opponent_mode):
+        for nxt in _expand_actual_state(spec, policy, actual, opponent_mode, restricted_k = restricted_k):
             s0, s1, tk, p = nxt
 
             # Keep only bounded non-terminal actual states.
@@ -563,7 +742,12 @@ def figure3_boundary_data(policy: np.ndarray) -> dict[str, np.ndarray]:
 def figure4_cross_section_data(
     policy: np.ndarray,
     opponent_score: int = 30,
-) -> dict[str, np.ndarray]:
+    spec: Optional[dict] = None,
+    reachable: Optional[np.ndarray] = None,
+    restricted_k: Optional[bool] = None,
+    opponent_mode: str = "any",
+    include_reachable: bool = True,
+) -> dict[str, object]:
     """Extract Figure 4 fixed-opponent-score cross-section data.
 
     Args:
@@ -571,12 +755,32 @@ def figure4_cross_section_data(
             Policy table.
         opponent_score:
             Fixed opponent score j. The paper uses j=30.
+        spec:
+            Optional game specification used for reachable-state shading.
+        reachable:
+            Optional precomputed reachable mask.
+        restricted_k:
+            Whether to use the restricted state space for reachability. If
+            omitted, this is inferred from the policy table.
+        opponent_mode:
+            Opponent reachability mode.
+        include_reachable:
+            Whether to include the reachable-state mask used by the paper-style
+            Figure 4 plot.
 
     Returns:
         Dictionary containing player scores and boundary k values.
     """
 
-    return cross_section_boundary(policy, opponent_score=opponent_score)
+    return cross_section_boundary(
+        policy,
+        opponent_score=opponent_score,
+        spec=spec,
+        reachable=reachable,
+        restricted_k=restricted_k,
+        opponent_mode=opponent_mode,
+        include_reachable=include_reachable,
+    )
 
 
 
@@ -584,6 +788,7 @@ def figure4_cross_section_data(
 def figure5_reachable_data(
     spec: dict,
     policy: np.ndarray,
+    restricted_k: bool,
     opponent_mode: str = "any",
 ) -> dict[str, np.ndarray]:
     """Extract Figure 5 reachable-state data.
@@ -608,6 +813,7 @@ def figure5_reachable_data(
         spec,
         policy,
         opponent_mode=opponent_mode,
+        restricted_k = restricted_k,
     )
 
     return {
@@ -619,6 +825,7 @@ def figure5_reachable_data(
 def figure6_reachable_continue_data(
     spec: dict,
     policy: np.ndarray,
+    restricted_k: bool,
     opponent_mode: str = "any",
 ) -> dict[str, np.ndarray]:
     """Extract Figure 6 reachable-continue-state data.
@@ -645,6 +852,7 @@ def figure6_reachable_continue_data(
         spec,
         policy,
         opponent_mode=opponent_mode,
+        restricted_k = restricted_k,
     )
     rc = reachable_continue_mask(policy, reachable)
 
@@ -658,6 +866,7 @@ def figure6_reachable_continue_data(
 def figure7_probability_contour_data(
     spec: dict,
     V: np.ndarray,
+    restricted_k: bool,
     levels: tuple[float, ...] = (0.03, 0.09, 0.27, 0.81),
 ) -> dict[str, object]:
     """Prepare win-probability contour data.
@@ -683,7 +892,7 @@ def figure7_probability_contour_data(
     return {
         "V_filled": np.array(V, copy=True),
         "levels": tuple(float(x) for x in levels),
-        "valid_mask": vi.valid_state_mask(spec),
+        "valid_mask": vi.valid_state_mask(spec, restricted_k = restricted_k),
     }
 
 
@@ -789,7 +998,7 @@ def plot_figure3_policy_boundary(
 
 
 def plot_figure4_cross_section(
-    cross_data: dict[str, np.ndarray],
+    cross_data: dict[str, object],
     ax=None,
     hold_at_threshold: int = 20,
     title: Optional[str] = None,
@@ -810,9 +1019,9 @@ def plot_figure4_cross_section(
         Matplotlib axis.
 
     Notes:
-        If the selected opponent-score cross-section contains no finite hold
-        boundary values, the function shows an empty-but-valid plot instead of
-        calling np.nanmax on an all-NaN array.
+        The paper's Figure 4 shows the contour of the roll/hold regions. When
+        ``hold_mask`` is present, this function draws that continuous contour
+        instead of connecting raw transition samples.
     """
 
     plt = _get_pyplot()
@@ -820,41 +1029,154 @@ def plot_figure4_cross_section(
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 5))
 
-    i = cross_data["player_score"]
-    k = cross_data["boundary_k"]
+    i = np.asarray(cross_data["player_score"])
+    k = np.asarray(cross_data["boundary_k"])
     opponent_score = int(cross_data["opponent_score"])
+    G = int(i.size)
 
-    finite_mask = np.isfinite(k)
+    reachable_mask = cross_data.get("reachable_mask")
+    drew_reachable = False
 
-    if finite_mask.any():
-        ax.plot(i, k, label="Optimal hold boundary")
-        ymax = max(float(np.nanmax(k)), float(hold_at_threshold)) + 5
-    else:
+    if reachable_mask is not None:
+        reachable_array = np.asarray(reachable_mask, dtype=bool)
+
+        if reachable_array.any():
+            ax.contourf(
+                np.arange(reachable_array.shape[0]),
+                np.arange(reachable_array.shape[1]),
+                reachable_array.T.astype(float),
+                levels=[0.5, 1.5],
+                colors=["#d9d9d9"],
+                alpha=0.75,
+                zorder=0,
+            )
+            drew_reachable = True
+
+    boundary_label_used = False
+    drew_contour_boundary = False
+    hold_mask = cross_data.get("hold_mask")
+
+    if hold_mask is not None:
+        hold_array = np.asarray(hold_mask, dtype=bool)
+
+        if hold_array.any() and np.logical_not(hold_array).any():
+            ax.contour(
+                np.arange(hold_array.shape[0]),
+                np.arange(hold_array.shape[1]),
+                hold_array.T.astype(float),
+                levels=[0.5],
+                colors=["#333333"],
+                linewidths=2.5,
+                zorder=3,
+            )
+            boundary_label_used = True
+            drew_contour_boundary = True
+
+    if not drew_contour_boundary:
+        boundary_segments = cross_data.get("boundary_segments", [])
+
+        for segment_info in boundary_segments:
+            points = np.asarray(segment_info["points"], dtype=float)
+            if points.size == 0:
+                continue
+
+            label = "Optimal Boundary" if not boundary_label_used else None
+            boundary_label_used = True
+
+            if points.shape[0] == 1:
+                ax.plot(
+                    points[:, 0],
+                    points[:, 1],
+                    marker="o",
+                    markersize=3,
+                    linestyle="None",
+                    color="#333333",
+                    label=label,
+                    zorder=3,
+                )
+            else:
+                ax.plot(
+                    points[:, 0],
+                    points[:, 1],
+                    color="#333333",
+                    linewidth=2.5,
+                    solid_capstyle="round",
+                    label=label,
+                    zorder=3,
+                )
+
+        terminal_boundary = cross_data.get("terminal_boundary")
+        if terminal_boundary is not None:
+            terminal_points = np.asarray(terminal_boundary, dtype=float)
+
+            if terminal_points.size:
+                visible = terminal_points[:, 1] <= 50
+                terminal_points = terminal_points[visible]
+
+            if terminal_points.size:
+                label = "Optimal Boundary" if not boundary_label_used else None
+                boundary_label_used = True
+                ax.plot(
+                    terminal_points[:, 0],
+                    terminal_points[:, 1],
+                    color="#333333",
+                    linewidth=2.5,
+                    solid_capstyle="round",
+                    label=label,
+                    zorder=3,
+                )
+
+    if not boundary_label_used:
         # No finite hold boundary exists for this cross-section.
         # This can happen in small demo games or poorly chosen opponent_score.
         ax.plot([], [], label="No finite hold boundary in this section")
-        ymax = float(hold_at_threshold) + 5
 
-    ax.axhline(
+    hold_line = ax.axhline(
         hold_at_threshold,
         linestyle="--",
-        linewidth=1.5,
+        linewidth=1.2,
+        color="#9e9e9e",
         label=f"Hold at {hold_at_threshold}",
+        zorder=2,
     )
 
+    from matplotlib.lines import Line2D
+
+    legend_handles = []
+    legend_labels = []
+
+    if boundary_label_used:
+        legend_handles.append(
+            Line2D([0], [0], color="#333333", linewidth=2.5)
+        )
+        legend_labels.append("Optimal Boundary")
+
+    if drew_reachable:
+        from matplotlib.patches import Patch
+
+        legend_handles.append(
+            Patch(facecolor="#d9d9d9", edgecolor="#bfbfbf", label="Reachable"),
+        )
+        legend_labels.append("Reachable")
+
+    legend_handles.append(hold_line)
+    legend_labels.append(f"Hold at {hold_at_threshold}")
+
+    ax.legend(legend_handles, legend_labels, frameon=False, loc="lower left")
+
     ax.set_xlabel("Player 1 Score (i)")
-    ax.set_ylabel("Turn Total Boundary (k)")
-    ax.set_ylim(0, ymax)
+    ax.set_ylabel("Turn Total (k)")
+    ax.set_xlim(0, G)
+    ax.set_ylim(0, 50)
 
     if title is None:
         title = (
-            "Cross-section of Roll/Hold Boundary, "
-            f"Opponent Score = {opponent_score}"
+            "Cross-section of the roll/hold boundary "
+            f"opponent's score = {opponent_score}"
         )
 
     ax.set_title(title)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    ax.grid(False)
 
     return ax
 
@@ -1097,7 +1419,7 @@ def plot_figure7_probability_contours(
 # 6. Convenience summary helpers
 # ---------------------------------------------------------------------
 
-def summarize_solution(spec: dict, V: np.ndarray, policy: np.ndarray) -> dict[str, object]:
+def summarize_solution(spec: dict, V: np.ndarray, policy: np.ndarray, restricted_k: bool) -> dict[str, object]:
     """Summarize a solved value-iteration result.
 
     Args:
@@ -1117,7 +1439,7 @@ def summarize_solution(spec: dict, V: np.ndarray, policy: np.ndarray) -> dict[st
             n_hold_states
     """
 
-    valid = vi.valid_state_mask(spec)
+    valid = vi.valid_state_mask(spec, restricted_k = restricted_k)
 
     return {
         "target_score": vi.target_score(spec),
