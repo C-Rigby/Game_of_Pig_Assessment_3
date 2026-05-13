@@ -30,7 +30,7 @@ For a target score G, the non-terminal states are:
 
     0 <= i < G,
     0 <= j < G,
-    0 <= k < G - i.
+    0 <= k < G - i.   SHOULD THIS BE DIFFERENT?????
 
 If i + k >= G, the current player can hold and win, so the value is 1.
 Those states are not treated as unknown equations.
@@ -164,7 +164,7 @@ def is_valid_state(spec: dict, i: int, j: int, k: int) -> bool:
     """
 
     G = target_score(spec)
-    return 0 <= i < G and 0 <= j < G and 0 <= k < G - i
+    return 0 <= i < G and 0 <= j < G and 0 <= k < G # - i ############################################## CHANGE 
 
 
 def iter_states(spec: dict) -> Iterable[State]:
@@ -182,7 +182,7 @@ def iter_states(spec: dict) -> Iterable[State]:
 
     for i in range(G):
         for j in range(G):
-            for k in range(G - i):
+            for k in range(G): # - i): ############################################################
                 yield (i, j, k)
 
 

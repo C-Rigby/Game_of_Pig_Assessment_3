@@ -844,7 +844,7 @@ def plot_figure4_cross_section(
 
     ax.set_xlabel("Player 1 Score (i)")
     ax.set_ylabel("Turn Total Boundary (k)")
-    ax.set_ylim(0, ymax)
+    ax.set_ylim(0, 50)
 
     if title is None:
         title = (
