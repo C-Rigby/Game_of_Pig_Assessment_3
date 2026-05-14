@@ -54,7 +54,7 @@ from typing import Iterable, Optional
 import math
 import numpy as np
 
-import .value_iteration as vi
+from . import value_iteration as vi
 
 
 State = tuple[int, int, int]
