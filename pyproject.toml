@@ -5,26 +5,30 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 package-dir = {"" = "src"}
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [project]
-name = "Value-Iteration"
+name = "optimal_pig"
 version = "0.1.0"
-maintainers = [
-  { name="James Marriner", email="j.marriner1@lancaster.ac.uk" },
-]
+
 authors = [
   { name="James Marriner", email="j.marriner1@lancaster.ac.uk"},
 ]
-description = "Value Iteration Implementation for MDPs"
-requires-python = ">=3.13.10"
+description = "Implements Value Iteration Algorithm for the Dice Game Pig"
+
+requires-python = ">=3.13"
+
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
 ]
+
 dependencies = [
 	"matplotlib",
 	"numpy"
 ]
 
 [project.urls]
-homepage = "https://github.com/C-Rigby/Game_of_Pig_Assessment_3.git"
+homepage = "https://github.com/C-Rigby/Game_of_Pig_Assessment_3"
