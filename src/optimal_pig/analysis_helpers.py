@@ -54,8 +54,10 @@ from typing import Iterable, Optional
 import math
 import numpy as np
 
-from . import value_iteration as vi
+import sys
+sys.path.append('../../')
 
+from src.optimal_pig import value_iteration_fun as vi
 
 State = tuple[int, int, int]
 ActualState = tuple[int, int, int, int]
