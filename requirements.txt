@@ -1,3 +1,4 @@
-matplotlib>=3.10.8 - change import style?
+-e .
+matplotlib>=3.10.8
 numpy>=2.4.2
 pytest>=9.0.2
