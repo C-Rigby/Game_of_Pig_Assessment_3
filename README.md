@@ -33,9 +33,8 @@ deactivate
 
 ### Installing the Package
 
-To exclusively install the package for use (Double check this)
+To exclusively install the package for use
 ```
-source ~/start-pyenv
 python -m pip install 'https://github.com/C-Rigby/Game_of_Pig_Assessment_3.git'
 ```
 
