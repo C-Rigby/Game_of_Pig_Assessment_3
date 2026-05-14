@@ -12,19 +12,18 @@ This installation allows full exploration of the reproducibility project includi
 git clone https://github.com/C-Rigby/Game_of_Pig_Assessment_3.git
 cd Game_of_Pig_Assessment_3
 ```
-On Unix, proceed by creating a virtual environment
+On Unix with pyenv running, proceed by creating a virtual environment
 ```
-source ~/start-pyenv
 python -m venv env
 source env/bin/activate
 ```
-Install dependencies
+Install package & dependencies
 ```
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 Run unit tests (change depending on directory structure)
 ```
-pytest
+python -m pytest
 ```
 
 When finished, the virtual environment should be deactivated
