@@ -32,6 +32,11 @@ For a target score G, the non-terminal states are:
     0 <= j < G,
     0 <= k < G - i.
 
+By default, the solver only iterates over those non-terminal states. Passing
+restricted_k=False to the public helpers expands the k dimension to 0 <= k < G.
+Those extra states already satisfy i+k >= G and are treated as terminal wins by
+value_at.
+
 If i + k >= G, the current player can hold and win, so the value is 1.
 Those states are not treated as unknown equations.
 
@@ -138,7 +143,7 @@ def target_score(spec: dict) -> int:
     return int(spec["target_score"])
 
 
-def is_valid_state(spec: dict, i: int, j: int, k: int) -> bool:
+def is_valid_state(spec: dict, i: int, j: int, k: int, restricted_k: bool = True) -> bool:
     """Check whether (i, j, k) is a valid non-terminal state.
 
     Args:
@@ -150,13 +155,15 @@ def is_valid_state(spec: dict, i: int, j: int, k: int) -> bool:
             Opponent's banked score.
         k:
             Current turn total.
+        restricted_k:
+            If true, we consider only valid states and k is bounded above by G-i. Else, k is bounded by G.
 
     Returns:
         True iff
 
             0 <= i < G,
             0 <= j < G,
-            0 <= k < G - i.
+            0 <= k < G - i or 0 <= k < G.
 
     Explanation:
         If i + k >= G, the player can hold and win immediately. Such a state
@@ -164,15 +171,19 @@ def is_valid_state(spec: dict, i: int, j: int, k: int) -> bool:
     """
 
     G = target_score(spec)
-    return 0 <= i < G and 0 <= j < G and 0 <= k < G - i
+    upper_k = G - i if restricted_k else G
+    
+    return 0 <= i < G and 0 <= j < G and 0 <= k < upper_k
 
 
-def iter_states(spec: dict) -> Iterable[State]:
+def iter_states(spec: dict, restricted_k: bool = True) -> Iterable[State]:
     """Iterate through all valid non-terminal states.
 
     Args:
         spec:
             Game specification.
+        restricted_k:
+            If true, we consider only valid states and k is bounded above by G-i. Else, k is bounded by G.
 
     Yields:
         Tuples (i, j, k).
@@ -181,20 +192,24 @@ def iter_states(spec: dict) -> Iterable[State]:
     G = target_score(spec)
 
     for i in range(G):
+        upper_k = G - i if restricted_k else G
         for j in range(G):
-            for k in range(G - i):
+            for k in range(upper_k):
                 yield (i, j, k)
 
 
-def count_states(spec: dict) -> int:
-    """Count valid non-terminal states.
+def count_states(spec: dict, restricted_k: bool = True) -> int:
+    """Count iterated states.
 
     Args:
         spec:
             Game specification.
+        restricted_k:
+            If True, count only valid non-terminal states. If False, count the
+            full padded state cube.
 
     Returns:
-        Number of valid states.
+        Number of states that iter_states(...) will yield.
 
     Formula:
         For target score G,
@@ -202,14 +217,23 @@ def count_states(spec: dict) -> int:
             number of states = G * sum_{i=0}^{G-1} (G-i)
                              = G * G * (G+1) / 2.
 
-        For Pig with G=100, this gives 505000 states.
+        For Pig with G=100 and restricted_k=True, this gives 505000 states.
+        With restricted_k=False, this gives 1000000 states.
     """
 
     G = target_score(spec)
-    return G * (G * (G + 1) // 2)
+
+    if restricted_k:
+        return G * (G * (G + 1) // 2)
+
+    return G ** 3
 
 
-def make_value_table(spec: dict, init_value: float = 0.0) -> np.ndarray:
+def make_value_table(
+    spec: dict,
+    init_value: float = 0.0,
+    restricted_k: bool = True,
+) -> np.ndarray:
     """Create a padded value table V.
 
     Args:
@@ -217,6 +241,8 @@ def make_value_table(spec: dict, init_value: float = 0.0) -> np.ndarray:
             Game specification.
         init_value:
             Initial value assigned to every valid non-terminal state.
+        restricted_k:
+            If true, we consider only valid states and k is bounded above by G-i. Else, k is bounded by G.
 
     Returns:
         NumPy array V with shape (G, G, G). Valid states are set to init_value;
@@ -232,13 +258,13 @@ def make_value_table(spec: dict, init_value: float = 0.0) -> np.ndarray:
     G = target_score(spec)
     V = np.full((G, G, G), np.nan, dtype=float)
 
-    for i, j, k in iter_states(spec):
+    for i, j, k in iter_states(spec, restricted_k=restricted_k):
         V[i, j, k] = float(init_value)
 
     return V
 
 
-def valid_state_mask(spec: dict) -> np.ndarray:
+def valid_state_mask(spec: dict, restricted_k: bool = True) -> np.ndarray:
     """Create a Boolean mask for valid non-terminal states.
 
     Args:
@@ -252,7 +278,7 @@ def valid_state_mask(spec: dict) -> np.ndarray:
     G = target_score(spec)
     mask = np.zeros((G, G, G), dtype=bool)
 
-    for i, j, k in iter_states(spec):
+    for i, j, k in iter_states(spec, restricted_k=restricted_k):
         mask[i, j, k] = True
 
     return mask
@@ -262,7 +288,14 @@ def valid_state_mask(spec: dict) -> np.ndarray:
 # 2. Bellman equations
 # ---------------------------------------------------------------------
 
-def value_at(spec: dict, V: np.ndarray, i: int, j: int, k: int) -> float:
+def value_at(
+    spec: dict,
+    V: np.ndarray,
+    i: int,
+    j: int,
+    k: int,
+    restricted_k: bool = True,
+) -> float:
     """Read V[i,j,k] with terminal-state handling.
 
     Args:
@@ -276,6 +309,8 @@ def value_at(spec: dict, V: np.ndarray, i: int, j: int, k: int) -> float:
             Opponent's banked score.
         k:
             Current turn total.
+        restricted_k:
+            If true, we consider only valid states and k is bounded above by G-i. Else, k is bounded by G.
 
     Returns:
         1.0 if i + k >= G, because holding wins immediately.
@@ -291,13 +326,20 @@ def value_at(spec: dict, V: np.ndarray, i: int, j: int, k: int) -> float:
     if i + k >= G:
         return 1.0
 
-    if not is_valid_state(spec, i, j, k):
+    if not is_valid_state(spec, i, j, k, restricted_k=restricted_k):
         raise ValueError(f"Invalid non-terminal state: {(i, j, k)}")
 
     return float(V[i, j, k])
 
 
-def q_continue(spec: dict, V: np.ndarray, i: int, j: int, k: int) -> float:
+def q_continue(
+    spec: dict,
+    V: np.ndarray,
+    i: int,
+    j: int,
+    k: int,
+    restricted_k: bool = True,
+) -> float:
     """Compute the value of continuing: flip for Piglet, roll for Pig.
 
     Args:
@@ -307,6 +349,8 @@ def q_continue(spec: dict, V: np.ndarray, i: int, j: int, k: int) -> float:
             Current value table.
         i, j, k:
             State coordinates.
+        restricted_k:
+            If true, we consider only valid states and k is bounded above by G-i. Else, k is bounded by G.
 
     Returns:
         Expected win probability after taking the continue action.
@@ -326,22 +370,29 @@ def q_continue(spec: dict, V: np.ndarray, i: int, j: int, k: int) -> float:
         p_b = 1/6, d in {2,3,4,5,6}, each with probability 1/6.
     """
 
-    if not is_valid_state(spec, i, j, k):
+    if not is_valid_state(spec, i, j, k, restricted_k):
         raise ValueError(f"Invalid state: {(i, j, k)}")
 
     bust_prob = float(spec["bust_probability"])
     gains = tuple(int(x) for x in spec["gain_outcomes"])
     gain_probs = tuple(float(x) for x in spec["gain_probabilities"])
 
-    value = bust_prob * (1.0 - value_at(spec, V, j, i, 0))
+    value = bust_prob * (1.0 - value_at(spec, V, j, i, 0, restricted_k=restricted_k))
 
     for gain, prob in zip(gains, gain_probs):
-        value += prob * value_at(spec, V, i, j, k + gain)
+        value += prob * value_at(spec, V, i, j, k + gain, restricted_k=restricted_k)
 
     return float(value)
 
 
-def q_hold(spec: dict, V: np.ndarray, i: int, j: int, k: int) -> float:
+def q_hold(
+    spec: dict,
+    V: np.ndarray,
+    i: int,
+    j: int,
+    k: int,
+    restricted_k: bool = True,
+) -> float:
     """Compute the value of holding.
 
     Args:
@@ -364,7 +415,7 @@ def q_hold(spec: dict, V: np.ndarray, i: int, j: int, k: int) -> float:
         If i+k >= G, holding wins immediately and the value is 1.
     """
 
-    if not is_valid_state(spec, i, j, k):
+    if not is_valid_state(spec, i, j, k, restricted_k=restricted_k):
         raise ValueError(f"Invalid state: {(i, j, k)}")
 
     G = target_score(spec)
@@ -372,10 +423,17 @@ def q_hold(spec: dict, V: np.ndarray, i: int, j: int, k: int) -> float:
     if i + k >= G:
         return 1.0
 
-    return float(1.0 - value_at(spec, V, j, i + k, 0))
+    return float(1.0 - value_at(spec, V, j, i + k, 0, restricted_k=restricted_k))
 
 
-def bellman_update(spec: dict, V: np.ndarray, i: int, j: int, k: int) -> float:
+def bellman_update(
+    spec: dict,
+    V: np.ndarray,
+    i: int,
+    j: int,
+    k: int,
+    restricted_k: bool = True,
+) -> float:
     """Apply one Bellman optimality update.
 
     Args:
@@ -391,8 +449,8 @@ def bellman_update(spec: dict, V: np.ndarray, i: int, j: int, k: int) -> float:
     """
 
     return max(
-        q_continue(spec, V, i, j, k),
-        q_hold(spec, V, i, j, k),
+        q_continue(spec, V, i, j, k, restricted_k=restricted_k),
+        q_hold(spec, V, i, j, k, restricted_k=restricted_k),
     )
 
 
@@ -403,6 +461,7 @@ def best_action(
     j: int,
     k: int,
     tie_action: str = "hold",
+    restricted_k: bool = True,
 ) -> str:
     """Return the greedy action under a value table.
 
@@ -420,8 +479,8 @@ def best_action(
         spec["continue_action"] or spec["hold_action"].
     """
 
-    cont = q_continue(spec, V, i, j, k)
-    hold = q_hold(spec, V, i, j, k)
+    cont = q_continue(spec, V, i, j, k, restricted_k=restricted_k)
+    hold = q_hold(spec, V, i, j, k, restricted_k=restricted_k)
 
     if cont > hold:
         return str(spec["continue_action"])
@@ -442,6 +501,7 @@ def value_iteration(
     max_iterations: int = 100_000,
     init_value: float = 0.0,
     trace_states: Optional[Iterable[State]] = None,
+    restricted_k: bool = True,
 ) -> dict:
     """Run full Jacobi-style value iteration over all states.
 
@@ -458,6 +518,8 @@ def value_iteration(
         trace_states:
             Optional states whose values are recorded after each iteration.
             This is useful for Piglet goal=2 convergence plots.
+        restricted_k:
+            If true, we consider only valid states and k is bounded above by G-i. Else, k is bounded by G.
 
     Returns:
         Dictionary with keys:
@@ -486,11 +548,11 @@ def value_iteration(
 
     validate_spec(spec)
 
-    V = make_value_table(spec, init_value=init_value)
-    states = list(iter_states(spec))
+    V = make_value_table(spec, init_value=init_value, restricted_k=restricted_k)
+    states = list(iter_states(spec, restricted_k=restricted_k))
 
     traced = list(trace_states or [])
-    trace = {state: [value_at(spec, V, *state)] for state in traced}
+    trace = {state: [value_at(spec, V, *state, restricted_k=restricted_k)] for state in traced}
 
     deltas: list[float] = []
 
@@ -499,19 +561,19 @@ def value_iteration(
         delta = 0.0
 
         for i, j, k in states:
-            new_value = bellman_update(spec, old_V, i, j, k)
+            new_value = bellman_update(spec, old_V, i, j, k, restricted_k=restricted_k)
             delta = max(delta, abs(new_value - old_V[i, j, k]))
             V[i, j, k] = new_value
 
         deltas.append(delta)
 
         for state in traced:
-            trace[state].append(value_at(spec, V, *state))
+            trace[state].append(value_at(spec, V, *state, restricted_k=restricted_k))
 
         if delta < tol:
             return {
                 "V": V,
-                "policy": extract_policy(spec, V),
+                "policy": extract_policy(spec, V, restricted_k=restricted_k),
                 "deltas": deltas,
                 "trace": trace,
                 "iterations": iteration,
@@ -522,7 +584,7 @@ def value_iteration(
 
     return {
         "V": V,
-        "policy": extract_policy(spec, V),
+        "policy": extract_policy(spec, V, restricted_k=restricted_k),
         "deltas": deltas,
         "trace": trace,
         "iterations": max_iterations,
@@ -543,6 +605,7 @@ def _local_value_at(
     i: int,
     j: int,
     k: int,
+    restricted_k: bool = True,
 ) -> float:
     """Read a value during local subpartition iteration.
 
@@ -555,6 +618,8 @@ def _local_value_at(
             Previous local values for states in the current subpartition.
         i, j, k:
             State coordinates.
+        restricted_k:
+            If true, we consider only valid states and k is bounded above by G-i. Else, k is bounded by G.
 
     Returns:
         Terminal value 1 if i+k >= G; otherwise the old local value if the
@@ -566,7 +631,7 @@ def _local_value_at(
     if i + k >= G:
         return 1.0
 
-    if not is_valid_state(spec, i, j, k):
+    if not is_valid_state(spec, i, j, k, restricted_k=restricted_k):
         raise ValueError(f"Invalid non-terminal state: {(i, j, k)}")
 
     return float(old_local.get((i, j, k), V[i, j, k]))
@@ -579,6 +644,7 @@ def _local_q_continue(
     i: int,
     j: int,
     k: int,
+    restricted_k: bool = True,
 ) -> float:
     """Local-Jacobi version of q_continue.
 
@@ -600,10 +666,10 @@ def _local_q_continue(
     gains = tuple(int(x) for x in spec["gain_outcomes"])
     gain_probs = tuple(float(x) for x in spec["gain_probabilities"])
 
-    value = bust_prob * (1.0 - _local_value_at(spec, V, old_local, j, i, 0))
+    value = bust_prob * (1.0 - _local_value_at(spec, V, old_local, j, i, 0, restricted_k=restricted_k))
 
     for gain, prob in zip(gains, gain_probs):
-        value += prob * _local_value_at(spec, V, old_local, i, j, k + gain)
+        value += prob * _local_value_at(spec, V, old_local, i, j, k + gain, restricted_k=restricted_k)
 
     return float(value)
 
@@ -615,6 +681,7 @@ def _local_q_hold(
     i: int,
     j: int,
     k: int,
+    restricted_k: bool = True,
 ) -> float:
     """Local-Jacobi version of q_hold.
 
@@ -637,7 +704,7 @@ def _local_q_hold(
     if i + k >= G:
         return 1.0
 
-    return float(1.0 - _local_value_at(spec, V, old_local, j, i + k, 0))
+    return float(1.0 - _local_value_at(spec, V, old_local, j, i + k, 0, restricted_k=restricted_k))
 
 
 def _score_sum_pairs(G: int, score_sum: int) -> list[tuple[int, int]]:
@@ -667,7 +734,7 @@ def _score_sum_pairs(G: int, score_sum: int) -> list[tuple[int, int]]:
     return pairs
 
 
-def _subpartition_states(spec: dict, i: int, j: int) -> list[State]:
+def _subpartition_states(spec: dict, i: int, j: int, restricted_k: bool = True) -> list[State]:
     """Return states updated together for one local subpartition.
 
     Args:
@@ -689,10 +756,12 @@ def _subpartition_states(spec: dict, i: int, j: int) -> list[State]:
 
     G = target_score(spec)
 
-    states: list[State] = [(i, j, k) for k in range(G - i)]
+    upper_i = G - i if restricted_k else G
+    states: list[State] = [(i, j, k) for k in range(upper_i)]
 
     if i != j:
-        states.extend((j, i, k) for k in range(G - j))
+        upper_j = G - j if restricted_k else G
+        states.extend((j, i, k) for k in range(upper_j))
 
     return states
 
@@ -703,6 +772,7 @@ def partitioned_value_iteration(
     max_local_iterations: int = 100_000,
     init_value: float = 0.0,
     progress: bool = False,
+    restricted_k: bool = True,
 ) -> dict:
     """Run article-aligned partitioned value iteration.
 
@@ -747,7 +817,7 @@ def partitioned_value_iteration(
     validate_spec(spec)
 
     G = target_score(spec)
-    V = make_value_table(spec, init_value=init_value)
+    V = make_value_table(spec, init_value=init_value, restricted_k=restricted_k)
 
     local_iterations: dict[tuple[int, int], int] = {}
     max_local_delta: dict[tuple[int, int], float] = {}
@@ -758,7 +828,7 @@ def partitioned_value_iteration(
             print(f"Solving score_sum={score_sum}")
 
         for i, j in _score_sum_pairs(G, score_sum):
-            states = _subpartition_states(spec, i, j)
+            states = _subpartition_states(spec, i, j, restricted_k=restricted_k)
 
             final_delta = math.inf
             converged = False
@@ -771,8 +841,8 @@ def partitioned_value_iteration(
                 for state in states:
                     a, b, k = state
 
-                    cont = _local_q_continue(spec, V, old_local, a, b, k)
-                    hold = _local_q_hold(spec, V, old_local, a, b, k)
+                    cont = _local_q_continue(spec, V, old_local, a, b, k, restricted_k=restricted_k)
+                    hold = _local_q_hold(spec, V, old_local, a, b, k, restricted_k=restricted_k)
                     new_value = max(cont, hold)
 
                     new_values[state] = new_value
@@ -795,7 +865,7 @@ def partitioned_value_iteration(
 
     return {
         "V": V,
-        "policy": extract_policy(spec, V),
+        "policy": extract_policy(spec, V, restricted_k=restricted_k),
         "local_iterations": local_iterations,
         "max_local_delta": max_local_delta,
         "converged": all_converged,
@@ -812,6 +882,7 @@ def extract_policy(
     spec: dict,
     V: np.ndarray,
     tie_continue: bool = False,
+    restricted_k: bool = True,
 ) -> np.ndarray:
     """Extract the greedy optimal policy from a value table.
 
@@ -822,6 +893,8 @@ def extract_policy(
             Value table.
         tie_continue:
             If True, exact ties choose continue; otherwise ties choose hold.
+        restricted_k:
+            If true, we consider only valid states and k is bounded above by G-i. Else, k is bounded by G.
 
     Returns:
         Integer array with shape (G,G,G):
@@ -833,9 +906,9 @@ def extract_policy(
     G = target_score(spec)
     policy = np.full((G, G, G), -1, dtype=np.int8)
 
-    for i, j, k in iter_states(spec):
-        cont = q_continue(spec, V, i, j, k)
-        hold = q_hold(spec, V, i, j, k)
+    for i, j, k in iter_states(spec, restricted_k=restricted_k):
+        cont = q_continue(spec, V, i, j, k, restricted_k=restricted_k)
+        hold = q_hold(spec, V, i, j, k, restricted_k=restricted_k)
 
         if cont > hold or (
             tie_continue and math.isclose(cont, hold, rel_tol=0.0, abs_tol=1e-15)
@@ -847,7 +920,11 @@ def extract_policy(
     return policy
 
 
-def action_value_tables(spec: dict, V: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def action_value_tables(
+    spec: dict,
+    V: np.ndarray,
+    restricted_k: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
     """Compute full Q_continue and Q_hold tables.
 
     Args:
@@ -866,14 +943,14 @@ def action_value_tables(spec: dict, V: np.ndarray) -> tuple[np.ndarray, np.ndarr
     Qc = np.full((G, G, G), np.nan, dtype=float)
     Qh = np.full((G, G, G), np.nan, dtype=float)
 
-    for i, j, k in iter_states(spec):
-        Qc[i, j, k] = q_continue(spec, V, i, j, k)
-        Qh[i, j, k] = q_hold(spec, V, i, j, k)
+    for i, j, k in iter_states(spec, restricted_k=restricted_k):
+        Qc[i, j, k] = q_continue(spec, V, i, j, k, restricted_k=restricted_k)
+        Qh[i, j, k] = q_hold(spec, V, i, j, k, restricted_k=restricted_k)
 
     return Qc, Qh
 
 
-def optimal_policy_function(spec: dict, V: np.ndarray):
+def optimal_policy_function(spec: dict, V: np.ndarray, restricted_k: bool = True):
     """Create a game-playing policy function from a solved value table.
 
     Args:
@@ -896,7 +973,7 @@ def optimal_policy_function(spec: dict, V: np.ndarray):
     perspective (i,j,k), then selects the greedy action.
     """
 
-    policy_table = extract_policy(spec, V)
+    policy_table = extract_policy(spec, V, restricted_k=restricted_k)
 
     continue_action = str(spec["continue_action"])
     hold_action = str(spec["hold_action"])
@@ -913,7 +990,7 @@ def optimal_policy_function(spec: dict, V: np.ndarray):
         if i + k >= G:
             return hold_action
 
-        if not is_valid_state(spec, i, j, k):
+        if not is_valid_state(spec, i, j, k, restricted_k=restricted_k):
             raise ValueError(f"State cannot be represented as (i,j,k): {(i,j,k)}")
 
         return continue_action if policy_table[i, j, k] == 1 else hold_action
