@@ -200,7 +200,7 @@ def hold_boundary(policy: np.ndarray) -> np.ndarray:
     Use:
         This is the main data object for Figure 3 and Figure 4.
     """
-
+s
     G = policy.shape[0]
     boundary = np.full((G, G), np.nan, dtype=float)
 
