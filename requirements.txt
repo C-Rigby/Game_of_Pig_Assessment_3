@@ -1,5 +1,9 @@
+# Install the local package in editable mode so notebooks and tests use the
+# current working tree.
 -e .
-ipykernel >= 6.31
-matplotlib>=3.10.8
-numpy>=2.4.2
-pytest>=9.0.2
+
+# Runtime dependencies used by src/optimal_pig.
+numpy>=1.24,<3
+matplotlib>=3.7,<4
+ipykernel>=6,<7
+pytest>=7,<9

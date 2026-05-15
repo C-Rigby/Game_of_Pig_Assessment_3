@@ -17,7 +17,7 @@ authors = [
 ]
 description = "Implements Value Iteration Algorithm for the Dice Game Pig"
 
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 
 classifiers = [
     "Programming Language :: Python :: 3",
