@@ -199,7 +199,7 @@ def step(
     )
 
 
-def play_game(
+def play_pig(
     policy0: Policy,
     policy1: Policy,
     target_score: int = 100,
@@ -252,7 +252,7 @@ def make_hold_at_policy(threshold: int = 20, target_score: int = 100) -> Policy:
             Winning score. The policy also holds if holding wins immediately.
 
     Returns:
-        A policy function compatible with ``play_game``.
+        A policy function compatible with ``play_pig``.
     """
 
     if threshold < 0:
