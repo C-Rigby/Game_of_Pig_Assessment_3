@@ -346,68 +346,45 @@ def _figure3_surface_polygons(
     polygons: list[np.ndarray] = []
     rows, cols = K.shape
 
+    if max_surface_jump is None:
+        max_surface_jump = 12.0
+
     for i in range(rows - 1):
         for j in range(cols - 1):
-            z = np.asarray(
-                [K[i, j], K[i + 1, j], K[i + 1, j + 1], K[i, j + 1]],
-                dtype=float,
-            )
+            corners = [
+                (float(I[i, j]), float(J[i, j]), float(K[i, j])),
+                (float(I[i + 1, j]), float(J[i + 1, j]), float(K[i + 1, j])),
+                (float(I[i + 1, j + 1]), float(J[i + 1, j + 1]), float(K[i + 1, j + 1])),
+                (float(I[i, j + 1]), float(J[i, j + 1]), float(K[i, j + 1])),
+            ]
 
-            if not np.isfinite(z).all():
+            valid_points = [
+                np.asarray(corner, dtype=float)
+                for corner in corners
+                if np.isfinite(corner[2])
+            ]
+
+            if len(valid_points) < 3:
                 continue
 
-            if (
-                max_surface_jump is not None
-                and float(np.nanmax(z) - np.nanmin(z)) > max_surface_jump
-            ):
+            z_vals = np.asarray([point[2] for point in valid_points], dtype=float)
+            if float(np.max(z_vals) - np.min(z_vals)) > max_surface_jump:
                 continue
 
-            polygons.append(
-                np.asarray(
-                    [
-                        [I[i, j], J[i, j], z[0]],
-                        [I[i + 1, j], J[i + 1, j], z[1]],
-                        [I[i + 1, j + 1], J[i + 1, j + 1], z[2]],
-                        [I[i, j + 1], J[i, j + 1], z[3]],
-                    ],
-                    dtype=float,
-                )
-            )
+            polygons.append(np.asarray(valid_points, dtype=float))
 
     return polygons
 
 
 
-def _figure3_terminal_polygon(policy: np.ndarray) -> list[np.ndarray]:
-    """Return the unrestricted i + k = G terminal plane used in Figure 3."""
-
-    if policy.shape[2] != policy.shape[0]:
-        return []
-
-    i_max = float(policy.shape[0])
-    j_max = float(policy.shape[1])
-    k_max = float(policy.shape[2])
-
-    return [
-        np.asarray(
-            [
-                [0.0, 0.0, k_max],
-                [0.0, j_max, k_max],
-                [i_max, j_max, 0.0],
-                [i_max, 0.0, 0.0],
-            ],
-            dtype=float,
-        )
-    ]
-
-
-
-def _figure3_interface_face_polygon(
+def _figure3_axis_face_polygon(
     i: int,
     j: int,
     k: int,
     axis: int,
 ) -> np.ndarray:
+    """Return one face between neighbouring policy voxels."""
+
     x0, x1 = float(i), float(i + 1)
     y0, y1 = float(j), float(j + 1)
     z0, z1 = float(k), float(k + 1)
@@ -433,18 +410,26 @@ def _figure3_interface_face_polygon(
     )
 
 
-
 def _figure3_policy_interface_polygons(
     policy: np.ndarray,
     max_faces: Optional[int] = None,
-    include_ij_walls: bool = False,
+    include_ij_walls: bool = True,
     include_k_walls: bool = True,
-    exclude_terminal_region: bool = True,
+    exclude_terminal_region: bool = False,
 ) -> list[np.ndarray]:
-    if policy.ndim != 3:
+    """Fallback interface extraction when marching cubes is unavailable.
+
+    It draws the faces separating neighbouring hold and roll voxels. This is
+    less smooth than marching cubes but preserves the same Figure-4-style
+    object: the boundary of the ``policy == 0`` region.
+    """
+
+    policy_array = np.asarray(policy)
+
+    if policy_array.ndim != 3:
         raise ValueError("policy must be a 3D array")
 
-    G_i, G_j, G_k = (int(x) for x in policy.shape)
+    G_i, G_j, G_k = (int(x) for x in policy_array.shape)
     polygons: list[np.ndarray] = []
 
     axes: list[int] = []
@@ -454,16 +439,18 @@ def _figure3_policy_interface_polygons(
         axes.append(2)
 
     for axis in axes:
-        upper = [G_i, G_j, G_k]
-        upper[axis] -= 1
+        limit_i, limit_j, limit_k = G_i, G_j, G_k
+        if axis == 0:
+            limit_i -= 1
+        elif axis == 1:
+            limit_j -= 1
+        else:
+            limit_k -= 1
 
-        for i in range(upper[0]):
-            for j in range(upper[1]):
-                for k in range(upper[2]):
-                    current = int(policy[i, j, k])
-
-                    if current < 0:
-                        continue
+        for i in range(limit_i):
+            for j in range(limit_j):
+                for k in range(limit_k):
+                    current = int(policy_array[i, j, k])
 
                     ni, nj, nk = i, j, k
                     if axis == 0:
@@ -473,10 +460,7 @@ def _figure3_policy_interface_polygons(
                     else:
                         nk += 1
 
-                    neighbour = int(policy[ni, nj, nk])
-
-                    if neighbour < 0:
-                        continue
+                    neighbour = int(policy_array[ni, nj, nk])
 
                     if current == neighbour:
                         continue
@@ -486,7 +470,7 @@ def _figure3_policy_interface_polygons(
                             continue
 
                     polygons.append(
-                        _figure3_interface_face_polygon(
+                        _figure3_axis_face_polygon(
                             i,
                             j,
                             k,
@@ -500,6 +484,453 @@ def _figure3_policy_interface_polygons(
 
     return polygons
 
+
+def _figure3_hold_volume_surface_polygons(
+    hold_volume: np.ndarray,
+    valid_volume: Optional[np.ndarray] = None,
+    max_faces: Optional[int] = None,
+) -> list[np.ndarray]:
+    """Extract the 3D hold/roll interface from a hold-volume by marching cubes.
+
+    This is the 3D analogue of Figure 4's contour of ``policy == 0``. It avoids
+    compressing the policy into a single-valued height field ``k = K(i,j)`` and
+    therefore preserves higher-order bends visible in cross-sections.
+    """
+
+    volume = np.asarray(hold_volume, dtype=float)
+
+    if volume.ndim != 3:
+        raise ValueError("hold_volume must be a 3D array")
+
+    if not np.any(volume > 0.5) or not np.any(volume < 0.5):
+        return []
+
+    try:
+        from skimage import measure
+
+        verts, faces, _, _ = measure.marching_cubes(
+            volume,
+            level=0.5,
+            spacing=(1.0, 1.0, 1.0),
+            allow_degenerate=False,
+        )
+
+        triangles = verts[faces]
+
+        if valid_volume is not None:
+            valid = np.asarray(valid_volume, dtype=bool)
+            if valid.shape == volume.shape:
+                centroids = triangles.mean(axis=1)
+                nearest = np.rint(centroids).astype(int)
+                nearest[:, 0] = np.clip(nearest[:, 0], 0, valid.shape[0] - 1)
+                nearest[:, 1] = np.clip(nearest[:, 1], 0, valid.shape[1] - 1)
+                nearest[:, 2] = np.clip(nearest[:, 2], 0, valid.shape[2] - 1)
+
+                # Keep surfaces in or next to the valid state space. This keeps
+                # the action boundary while avoiding artefacts from completely
+                # external padded regions if a caller supplies such a mask.
+                keep = valid[nearest[:, 0], nearest[:, 1], nearest[:, 2]]
+                if keep.any():
+                    triangles = triangles[keep]
+
+        # Remove pure outer-box faces if they appear. The roll/hold boundary is
+        # internal to the policy volume; outer rendering walls are not part of
+        # Figure 3's mathematical object.
+        if triangles.size:
+            shape = np.asarray(volume.shape, dtype=float)
+            centroids = triangles.mean(axis=1)
+            ranges = triangles.max(axis=1) - triangles.min(axis=1)
+
+            outer = np.zeros(triangles.shape[0], dtype=bool)
+            for axis in range(3):
+                near_low = centroids[:, axis] <= 0.02
+                near_high = centroids[:, axis] >= shape[axis] - 1.02
+                almost_flat = ranges[:, axis] < 0.08
+                outer |= almost_flat & (near_low | near_high)
+
+            triangles = triangles[~outer]
+
+        polygons = [np.asarray(tri, dtype=float) for tri in triangles]
+
+    except Exception:
+        polygons = _figure3_policy_interface_polygons(
+            np.where(volume > 0.5, 0, 1).astype(int),
+            max_faces=max_faces,
+            include_ij_walls=True,
+            include_k_walls=True,
+            exclude_terminal_region=False,
+        )
+
+    if max_faces is not None and len(polygons) > max_faces:
+        idx = np.linspace(0, len(polygons) - 1, max_faces).astype(int)
+        polygons = [polygons[int(x)] for x in idx]
+
+    return polygons
+
+
+def _figure3_transition_envelope(
+    transition_points: np.ndarray,
+    shape: tuple[int, int],
+) -> np.ndarray:
+    """Return the highest transition height for each score pair."""
+
+    envelope = np.full(shape, np.nan, dtype=float)
+    points = np.asarray(transition_points, dtype=float)
+
+    if points.size == 0:
+        return envelope
+
+    for row in points:
+        i = int(row[0])
+        j = int(row[1])
+        k = float(row[2])
+
+        if not (0 <= i < shape[0] and 0 <= j < shape[1]):
+            continue
+
+        if not np.isfinite(envelope[i, j]) or k > envelope[i, j]:
+            envelope[i, j] = k
+
+    return envelope
+
+
+
+def _nearest_fill_2d(values: np.ndarray) -> np.ndarray:
+    """Fill missing 2D values from the nearest finite grid point."""
+
+    A = np.asarray(values, dtype=float)
+    filled = np.array(A, copy=True)
+    finite = np.isfinite(filled)
+
+    if not finite.any():
+        return np.zeros_like(filled, dtype=float)
+
+    rows, cols = filled.shape
+    from collections import deque as _deque
+
+    queue = _deque()
+    seen = np.zeros_like(finite, dtype=bool)
+
+    for i, j in np.argwhere(finite):
+        i = int(i)
+        j = int(j)
+        queue.append((i, j))
+        seen[i, j] = True
+
+    directions = (
+        (-1, 0),
+        (1, 0),
+        (0, -1),
+        (0, 1),
+        (-1, -1),
+        (-1, 1),
+        (1, -1),
+        (1, 1),
+    )
+
+    while queue:
+        i, j = queue.popleft()
+
+        for di, dj in directions:
+            ni = i + di
+            nj = j + dj
+
+            if not (0 <= ni < rows and 0 <= nj < cols):
+                continue
+            if seen[ni, nj]:
+                continue
+
+            filled[ni, nj] = filled[i, j]
+            seen[ni, nj] = True
+            queue.append((ni, nj))
+
+    fallback = float(np.nanmedian(A[finite]))
+    filled[~np.isfinite(filled)] = fallback
+    return filled
+
+
+
+
+def _figure3_fill_boundary_surface(
+    K: np.ndarray,
+    upper_K: Optional[np.ndarray] = None,
+    smooth_passes: int = 2,
+    detail_strength: float = 0.40,
+) -> np.ndarray:
+    """Fill missing Figure 3 boundary heights into one continuous surface."""
+
+    values = np.asarray(K, dtype=float)
+    filled = np.array(values, copy=True)
+    observed = np.isfinite(values)
+    rows, cols = filled.shape
+
+    if not observed.any():
+        return np.zeros_like(filled, dtype=float)
+
+    # Row-wise interpolation keeps the surface continuous along opponent score.
+    for i in range(rows):
+        row = filled[i, :]
+        finite = np.isfinite(row)
+        if finite.sum() >= 2:
+            x = np.arange(cols)
+            row_interp = np.interp(x, x[finite], row[finite])
+            row[~finite] = row_interp[~finite]
+            filled[i, :] = row
+
+    # Column-wise interpolation fills the remaining gaps along player score.
+    for j in range(cols):
+        col = filled[:, j]
+        finite = np.isfinite(col)
+        if finite.sum() >= 2:
+            x = np.arange(rows)
+            col_interp = np.interp(x, x[finite], col[finite])
+            col[~finite] = col_interp[~finite]
+            filled[:, j] = col
+
+    filled = _nearest_fill_2d(filled)
+
+    # Integrate the high-score upper transition branch into the height field.
+    # This is the source of the small upward bend around player score near 80.
+    # It is merged into the main surface instead of being plotted as a separate
+    # vertical ribbon, because the separate ribbon creates a block-like kink.
+    if upper_K is not None:
+        upper = np.asarray(upper_K, dtype=float)
+        if upper.shape == filled.shape and np.isfinite(upper).any():
+            i_grid = np.arange(rows, dtype=float)[:, None]
+            terminal_profile = np.maximum(float(rows) - i_grid, 0.0)
+            terminal_profile = np.broadcast_to(terminal_profile, filled.shape)
+
+            upper_valid = np.isfinite(upper)
+            high_score_band = np.logical_and(
+                i_grid >= 0.50 * float(rows),
+                i_grid <= 0.93 * float(rows),
+            )
+            high_score_band = np.broadcast_to(high_score_band, filled.shape)
+
+            near_terminal_branch = np.logical_and(
+                upper <= terminal_profile + 8.0,
+                upper >= terminal_profile - 28.0,
+            )
+            clearly_above_base = upper > filled + 2.0
+
+            branch_mask = np.logical_and.reduce(
+                (upper_valid, high_score_band, near_terminal_branch, clearly_above_base)
+            )
+
+            branch_values = np.full_like(filled, np.nan, dtype=float)
+            branch_target = 0.74 * upper + 0.26 * terminal_profile
+            branch_target = np.clip(branch_target, 0.0, float(rows))
+            branch_values[branch_mask] = branch_target[branch_mask]
+
+            if np.isfinite(branch_values).any():
+                branch_filled = _nearest_fill_2d(branch_values)
+
+                # Expand the branch only locally so it becomes a smooth raised
+                # bend rather than a disconnected strip.
+                expanded = np.array(branch_mask, copy=True)
+                for _ in range(2):
+                    padded = np.pad(expanded, 1, mode="constant", constant_values=False)
+                    expanded = (
+                        padded[1:-1, 1:-1]
+                        | padded[0:-2, 1:-1]
+                        | padded[2:, 1:-1]
+                        | padded[1:-1, 0:-2]
+                        | padded[1:-1, 2:]
+                        | padded[0:-2, 0:-2]
+                        | padded[0:-2, 2:]
+                        | padded[2:, 0:-2]
+                        | padded[2:, 2:]
+                    )
+                expanded = np.logical_and(expanded, high_score_band)
+                expanded = np.logical_and(
+                    expanded,
+                    branch_filled >= terminal_profile - 32.0,
+                )
+                expanded = np.logical_and(
+                    expanded,
+                    branch_filled <= terminal_profile + 12.0,
+                )
+
+                filled[expanded] = np.maximum(
+                    filled[expanded],
+                    0.84 * branch_filled[expanded] + 0.16 * filled[expanded],
+                )
+                filled[branch_mask] = np.maximum(
+                    filled[branch_mask],
+                    branch_target[branch_mask],
+                )
+
+    def _one_smooth(A: np.ndarray) -> np.ndarray:
+        padded = np.pad(A, 1, mode="edge")
+        return (
+            0.64 * padded[1:-1, 1:-1]
+            + 0.06 * padded[0:-2, 1:-1]
+            + 0.06 * padded[2:, 1:-1]
+            + 0.06 * padded[1:-1, 0:-2]
+            + 0.06 * padded[1:-1, 2:]
+            + 0.03 * padded[0:-2, 0:-2]
+            + 0.03 * padded[0:-2, 2:]
+            + 0.03 * padded[2:, 0:-2]
+            + 0.03 * padded[2:, 2:]
+        )
+
+    smooth_passes = max(0, int(smooth_passes))
+    smoothed = np.array(filled, copy=True)
+    for _ in range(smooth_passes):
+        smoothed = _one_smooth(smoothed)
+
+    detail_strength = float(np.clip(detail_strength, 0.0, 1.0))
+    surface = (1.0 - detail_strength) * smoothed + detail_strength * filled
+
+    # Restore the observed first-hold boundary, but not so strongly that it
+    # destroys the high-score upward bend produced by the upper branch.
+    surface[observed] = 0.70 * values[observed] + 0.30 * surface[observed]
+
+    if upper_K is not None:
+        upper = np.asarray(upper_K, dtype=float)
+        if upper.shape == surface.shape and np.isfinite(upper).any():
+            i_grid = np.arange(rows, dtype=float)[:, None]
+            terminal_profile = np.maximum(float(rows) - i_grid, 0.0)
+            terminal_profile = np.broadcast_to(terminal_profile, surface.shape)
+            branch_mask = np.logical_and.reduce(
+                (
+                    np.isfinite(upper),
+                    i_grid >= 0.50 * float(rows),
+                    i_grid <= 0.93 * float(rows),
+                    upper <= terminal_profile + 8.0,
+                    upper >= terminal_profile - 28.0,
+                    upper > surface + 1.0,
+                )
+            )
+            branch_target = np.clip(0.74 * upper + 0.26 * terminal_profile, 0.0, float(rows))
+            surface[branch_mask] = np.maximum(surface[branch_mask], branch_target[branch_mask])
+
+    surface = np.clip(surface, 0.0, float(rows))
+    return surface
+
+
+def _figure3_cement_side_polygons(
+    I: np.ndarray,
+    J: np.ndarray,
+    K: np.ndarray,
+    z_base: float = 0.0,
+    draw_front: bool = False,
+    draw_back: bool = True,
+    draw_left: bool = True,
+    draw_right: bool = False,
+) -> list[np.ndarray]:
+    """Return outer skirt polygons so the Figure 3 surface looks solid."""
+
+    polygons: list[np.ndarray] = []
+    rows, cols = K.shape
+
+    for i in range(rows - 1):
+        if draw_front:
+            polygons.append(
+                np.asarray(
+                    [
+                        [I[i, 0], J[i, 0], z_base],
+                        [I[i + 1, 0], J[i + 1, 0], z_base],
+                        [I[i + 1, 0], J[i + 1, 0], K[i + 1, 0]],
+                        [I[i, 0], J[i, 0], K[i, 0]],
+                    ],
+                    dtype=float,
+                )
+            )
+        if draw_back:
+            polygons.append(
+                np.asarray(
+                    [
+                        [I[i, cols - 1], J[i, cols - 1], z_base],
+                        [I[i + 1, cols - 1], J[i + 1, cols - 1], z_base],
+                        [I[i + 1, cols - 1], J[i + 1, cols - 1], K[i + 1, cols - 1]],
+                        [I[i, cols - 1], J[i, cols - 1], K[i, cols - 1]],
+                    ],
+                    dtype=float,
+                )
+            )
+
+    for j in range(cols - 1):
+        if draw_left:
+            polygons.append(
+                np.asarray(
+                    [
+                        [I[0, j], J[0, j], z_base],
+                        [I[0, j + 1], J[0, j + 1], z_base],
+                        [I[0, j + 1], J[0, j + 1], K[0, j + 1]],
+                        [I[0, j], J[0, j], K[0, j]],
+                    ],
+                    dtype=float,
+                )
+            )
+        if draw_right:
+            polygons.append(
+                np.asarray(
+                    [
+                        [I[rows - 1, j], J[rows - 1, j], z_base],
+                        [I[rows - 1, j + 1], J[rows - 1, j + 1], z_base],
+                        [I[rows - 1, j + 1], J[rows - 1, j + 1], K[rows - 1, j + 1]],
+                        [I[rows - 1, j], J[rows - 1, j], K[rows - 1, j]],
+                    ],
+                    dtype=float,
+                )
+            )
+
+    return polygons
+
+
+
+def _figure3_secondary_ribbon_polygons(
+    I: np.ndarray,
+    J: np.ndarray,
+    transition_surfaces: list[dict[str, object]],
+    max_surface_jump: float = 12.0,
+    min_polygons: int = 8,
+) -> list[np.ndarray]:
+    """Extract higher-order transition sheets as raised ribbons."""
+
+    ribbon_polygons: list[np.ndarray] = []
+
+    for surface_info in transition_surfaces:
+        transition_order = int(surface_info.get("transition_order", 0))
+        if transition_order < 2:
+            continue
+
+        surface_K = np.asarray(surface_info["K"], dtype=float)
+        polygons = _figure3_surface_polygons(
+            I,
+            J,
+            surface_K,
+            max_surface_jump=max_surface_jump,
+        )
+
+        if len(polygons) >= min_polygons:
+            ribbon_polygons.extend(polygons)
+
+    return ribbon_polygons
+
+
+def _figure3_terminal_polygon(policy: np.ndarray) -> list[np.ndarray]:
+    """Return the unrestricted i + k = G terminal plane used in Figure 3."""
+
+    if policy.shape[2] != policy.shape[0]:
+        return []
+
+    i_max = float(policy.shape[0])
+    j_max = float(policy.shape[1])
+    k_max = float(policy.shape[2])
+
+    return [
+        np.asarray(
+            [
+                [0.0, 0.0, k_max],
+                [0.0, j_max, k_max],
+                [i_max, j_max, 0.0],
+                [i_max, 0.0, 0.0],
+            ],
+            dtype=float,
+        )
+    ]
 
 
 def _split_point_segments(points: np.ndarray) -> list[np.ndarray]:
@@ -1113,6 +1544,8 @@ def figure3_boundary_data(
         "I": I,
         "J": J,
         "K": B,
+        "hold_volume": policy == 0,
+        "valid_volume": policy >= 0,
         "points": boundary_points(policy),
         "transition_surfaces": transition_surfaces,
         "transition_points": transition_points,
@@ -1438,13 +1871,14 @@ def plot_figure2_piglet_trace(
 
 
 
+
 def plot_figure3_policy_boundary(
     boundary_data: dict[str, object],
     ax=None,
     title: Optional[str] = None,
-    boundary_color: str = "#74879B",
+    boundary_color: str = "#7F878C",
     terminal_color: str = "#DCE4EC",
-    boundary_alpha: float = 0.88,
+    boundary_alpha: float = 0.92,
     terminal_alpha: float = 0.10,
     max_faces: Optional[int] = None,
     max_surface_jump: Optional[float] = None,
@@ -1487,30 +1921,55 @@ def plot_figure3_policy_boundary(
     I = np.asarray(boundary_data["I"], dtype=float)
     J = np.asarray(boundary_data["J"], dtype=float)
     K = np.asarray(boundary_data["K"], dtype=float)
-    transition_points = np.asarray(
-        boundary_data.get("transition_points", np.empty((0, 6))),
-        dtype=float,
-    )
-    terminal_polygons = list(boundary_data.get("terminal_polygons", []))
-    boundary_points_array = np.asarray(
-        boundary_data.get("points", np.empty((0, 3))),
-        dtype=float,
-    )
 
     max_i = float(I.shape[0])
     max_j = float(J.shape[1])
     max_k = float(K.shape[0])
 
-    _add_flat_terminal_plane(
-        ax,
-        terminal_polygons,
-        color=terminal_color,
-        alpha=terminal_alpha,
-    )
+    hold_volume = boundary_data.get("hold_volume")
+    valid_volume = boundary_data.get("valid_volume")
 
-    finite = np.isfinite(K)
-    if finite.any():
-        surface_K = np.ma.masked_invalid(K)
+    if hold_volume is not None:
+        boundary_polygons = _figure3_hold_volume_surface_polygons(
+            np.asarray(hold_volume, dtype=bool),
+            valid_volume=np.asarray(valid_volume, dtype=bool) if valid_volume is not None else None,
+            max_faces=max_faces,
+        )
+    else:
+        # Backwards-compatible fallback for old boundary_data dictionaries.
+        transition_surfaces = list(boundary_data.get("transition_surfaces", []))
+        boundary_polygons = []
+        if max_surface_jump is None:
+            max_surface_jump = 12.0
+        for surface_info in transition_surfaces:
+            surface_K = np.asarray(surface_info["K"], dtype=float)
+            if not np.isfinite(surface_K).any():
+                continue
+            boundary_polygons.extend(
+                _figure3_surface_polygons(
+                    I,
+                    J,
+                    surface_K,
+                    max_surface_jump=max_surface_jump,
+                )
+            )
+
+    if boundary_polygons:
+        _add_surface_collection(
+            ax,
+            boundary_polygons,
+            color=boundary_color,
+            alpha=boundary_alpha,
+        )
+    else:
+        # Last-resort fallback: first-hold surface. This is less faithful than
+        # the hold-volume isosurface but keeps the function usable.
+        surface_K = _figure3_fill_boundary_surface(
+            K,
+            upper_K=None,
+            smooth_passes=1,
+            detail_strength=0.45,
+        )
         ax.plot_surface(
             I,
             J,
@@ -1518,47 +1977,11 @@ def plot_figure3_policy_boundary(
             color=boundary_color,
             edgecolor="none",
             linewidth=0,
-            alpha=min(float(boundary_alpha), 0.42),
-            antialiased=False,
-            shade=False,
+            alpha=boundary_alpha,
+            antialiased=True,
+            shade=True,
             rstride=1,
             cstride=1,
-        )
-
-    if transition_points.size:
-        points = transition_points[:, :3]
-
-        if max_faces is not None and points.shape[0] > max_faces:
-            idx = np.linspace(0, points.shape[0] - 1, max_faces).astype(int)
-            points = points[idx]
-
-        ax.scatter(
-            points[:, 0],
-            points[:, 1],
-            points[:, 2],
-            s=1.6,
-            marker="s",
-            color="#566577",
-            alpha=0.72,
-            depthshade=False,
-            linewidths=0,
-        )
-
-    if boundary_points_array.size:
-        if max_faces is not None and boundary_points_array.shape[0] > max_faces:
-            idx = np.linspace(0, boundary_points_array.shape[0] - 1, max_faces).astype(int)
-            boundary_points_array = boundary_points_array[idx]
-
-        ax.scatter(
-            boundary_points_array[:, 0],
-            boundary_points_array[:, 1],
-            boundary_points_array[:, 2],
-            s=2.2,
-            marker="s",
-            color="#4E5B6A",
-            alpha=0.92,
-            depthshade=False,
-            linewidths=0,
         )
 
     ax.set_xlabel("Player 1 Score (i)")
@@ -1567,12 +1990,13 @@ def plot_figure3_policy_boundary(
     ax.set_xlim(0, max_i)
     ax.set_ylim(0, max_j)
     ax.set_zlim(0, max_k)
+
     if hasattr(ax, "set_box_aspect"):
         ax.set_box_aspect((max_i, max_j, max_k))
 
     for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
         axis.pane.set_facecolor((1.0, 1.0, 1.0, 0.0))
-        axis.pane.set_edgecolor("#c8c8c8")
+        axis.pane.set_edgecolor("#BFBFBF")
         axis._axinfo["grid"]["color"] = (0.82, 0.82, 0.82, 1.0)
         axis._axinfo["grid"]["linewidth"] = 0.8
 
@@ -1582,7 +2006,6 @@ def plot_figure3_policy_boundary(
         ax.set_title(title)
 
     return ax
-
 
 
 def plot_figure4_cross_section(
