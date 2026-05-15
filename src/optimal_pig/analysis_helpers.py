@@ -2060,29 +2060,10 @@ def plot_figure7_probability_contours(
     contour_data: dict[str, object],
     ax=None,
     title: str = "Win Probability Contours for Optimal Play",
-    max_faces_per_level: Optional[int] = 20_000,
+    max_faces_per_level: int = 20_000,
 ):
-    """Plot probability contours for optimal play.
-
-    Args:
-        contour_data:
-            Output from figure7_probability_contour_data(...).
-        ax:
-            Optional 3D matplotlib axis.
-        title:
-            Plot title.
-        max_faces_per_level:
-            Maximum number of fallback surface faces per probability level.
-
-    Returns:
-        Matplotlib 3D axis.
-
-    Notes:
-        The paper shows contours at 3%, 9%, 27%, and 81%. This function tries
-        to use marching cubes for surface contours. If scikit-image is not
-        installed, it uses a lightweight surface approximation rather than a
-        point cloud.
-    """
+    import numpy as np
+    import matplotlib.pyplot as plt
 
     plt = _get_pyplot()
 
@@ -2093,10 +2074,18 @@ def plot_figure7_probability_contours(
     V = contour_data["V_filled"]
     levels = contour_data["levels"]
     valid_mask = contour_data["valid_mask"]
-    colors = ("#bdbdbd", "#969696", "#737373", "#525252")
+
+    colors = [
+        (0.15, 0.15, 0.15, 0.55),  
+        (0.15, 0.15, 0.15, 0.35),
+        (0.15, 0.15, 0.15, 0.20),
+        (0.15, 0.15, 0.15, 0.10), 
+    ]
 
     for idx, level in enumerate(levels):
-        color = colors[idx % len(colors)]
+        rgba = colors[idx % len(colors)]
+        rgb = rgba[:3]
+        alpha = rgba[3]
 
         try:
             _plot_probability_contour_with_marching_cubes(
@@ -2104,8 +2093,8 @@ def plot_figure7_probability_contours(
                 level=float(level),
                 ax=ax,
                 valid_mask=valid_mask,
-                color=color,
-                alpha=0.30,
+                color=rgb,
+                alpha=alpha,
             )
         except Exception:
             _plot_probability_contour_fallback(
@@ -2113,13 +2102,41 @@ def plot_figure7_probability_contours(
                 level=float(level),
                 ax=ax,
                 valid_mask=valid_mask,
-                color=color,
-                alpha=0.30,
+                color=rgb,
+                alpha=alpha,
                 max_faces=max_faces_per_level,
             )
 
-    return _finish_3d_state_plot(ax, tuple(int(x) for x in np.asarray(V).shape), title)
+    ax.set_title(title)
 
+    return _finish_3d_state_plot(
+        ax,
+        tuple(int(x) for x in np.asarray(V).shape),
+        title
+    )
+
+def add_3d_contour_legend(ax, levels, title="Win Probability"):
+    import matplotlib.pyplot as plt
+
+    handles = []
+    labels = []
+
+    alphas = [0.10, 0.20, 0.35, 0.55]
+
+    for i, level in enumerate(levels):
+        handles.append(
+            plt.Line2D([0], [0], color="black", alpha=alphas[i], lw=4)
+        )
+        labels.append(f"{int(level * 100)}%")
+
+    ax.legend(
+        handles,
+        labels,
+        title=title,
+        loc="center left",
+        bbox_to_anchor=(1.05, 0.5),
+        frameon=True
+    )
 
 # ---------------------------------------------------------------------
 # 6. Convenience summary helpers
