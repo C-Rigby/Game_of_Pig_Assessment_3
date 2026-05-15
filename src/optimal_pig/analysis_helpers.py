@@ -54,10 +54,7 @@ from typing import Iterable, Optional
 import math
 import numpy as np
 
-import sys
-sys.path.append('../../')
-
-from src.optimal_pig import value_iteration_fun as vi
+from . import value_iteration_fun as vi
 
 State = tuple[int, int, int]
 ActualState = tuple[int, int, int, int]
@@ -92,6 +89,7 @@ def piglet_goal2_trace_states() -> list[State]:
     ]
 
 
+
 def piglet_goal2_exact_values() -> dict[State, float]:
     """Return exact Piglet goal=2 probabilities from the paper.
 
@@ -118,6 +116,7 @@ def piglet_goal2_exact_values() -> dict[State, float]:
         (1, 0, 0): 4.0 / 5.0,
         (1, 1, 0): 2.0 / 3.0,
     }
+
 
 
 def check_piglet_goal2_solution(
@@ -153,6 +152,7 @@ def check_piglet_goal2_solution(
             )
 
     return errors
+
 
 
 def trace_to_table(trace: dict[State, list[float]]) -> dict[str, list[float]]:
@@ -219,6 +219,7 @@ def hold_boundary(policy: np.ndarray) -> np.ndarray:
     return boundary
 
 
+
 def boundary_points(policy: np.ndarray) -> np.ndarray:
     """Return roll/hold boundary as an array of 3D points.
 
@@ -246,6 +247,261 @@ def boundary_points(policy: np.ndarray) -> np.ndarray:
     return np.asarray(points, dtype=float)
 
 
+
+def _figure3_transition_surfaces(
+    policy: np.ndarray,
+) -> tuple[list[dict[str, np.ndarray | int]], np.ndarray]:
+    """Return k-direction roll/hold transition sheets for Figure 3.
+
+    Figure 3 in the paper is best approximated by the action changes that
+    occur as the turn total ``k`` increases for each fixed score pair
+    ``(i,j)``. This preserves overhangs by keeping the first transition, second
+    transition, and so on as separate sheets, while avoiding the unrelated
+    i/j-direction voxel walls that made the figure look blocky.
+    """
+
+    if policy.ndim != 3:
+        raise ValueError("policy must be a 3D array")
+
+    G_i, G_j, G_k = (int(x) for x in policy.shape)
+    max_transitions = 0
+    layers: dict[int, list[tuple[int, int, float, int, int]]] = {}
+    rows: list[tuple[float, float, float, float, float, float]] = []
+
+    for i in range(G_i):
+        terminal_k = G_i - i if G_i == G_k else G_k
+
+        for j in range(G_j):
+            valid_k = np.where(policy[i, j, :] >= 0)[0]
+
+            if valid_k.size < 2:
+                continue
+
+            transition_order = 0
+            previous_action = int(policy[i, j, int(valid_k[0])])
+
+            for k_value in valid_k[1:]:
+                k = int(k_value)
+                action = int(policy[i, j, k])
+
+                if action != previous_action:
+                    transition_order += 1
+
+                    # The paper draws the immediate-win limit i+k=G as its own
+                    # dark plane, so do not also plot policy transitions inside
+                    # or on that terminal region.
+                    if 0 <= k < terminal_k:
+                        max_transitions = max(max_transitions, transition_order)
+                        layers.setdefault(transition_order, []).append(
+                            (i, j, float(k), previous_action, action)
+                        )
+                        rows.append(
+                            (
+                                float(i),
+                                float(j),
+                                float(k),
+                                float(previous_action),
+                                float(action),
+                                float(transition_order),
+                            )
+                        )
+
+                previous_action = action
+
+    surfaces: list[dict[str, np.ndarray | int]] = []
+
+    for transition_order in range(1, max_transitions + 1):
+        K = np.full((G_i, G_j), np.nan, dtype=float)
+        points: list[tuple[float, float, float]] = []
+
+        for i, j, k, _from_action, _to_action in layers.get(transition_order, []):
+            K[i, j] = k
+            points.append((float(i), float(j), float(k)))
+
+        surfaces.append(
+            {
+                "transition_order": transition_order,
+                "K": K,
+                "points": np.asarray(points, dtype=float),
+            }
+        )
+
+    if rows:
+        transition_points = np.asarray(rows, dtype=float)
+    else:
+        transition_points = np.empty((0, 6), dtype=float)
+
+    return surfaces, transition_points
+
+
+
+def _figure3_surface_polygons(
+    I: np.ndarray,
+    J: np.ndarray,
+    K: np.ndarray,
+    max_surface_jump: Optional[float] = None,
+) -> list[np.ndarray]:
+    """Convert one transition sheet into edge-free quadrilateral polygons."""
+
+    polygons: list[np.ndarray] = []
+    rows, cols = K.shape
+
+    for i in range(rows - 1):
+        for j in range(cols - 1):
+            z = np.asarray(
+                [K[i, j], K[i + 1, j], K[i + 1, j + 1], K[i, j + 1]],
+                dtype=float,
+            )
+
+            if not np.isfinite(z).all():
+                continue
+
+            if (
+                max_surface_jump is not None
+                and float(np.nanmax(z) - np.nanmin(z)) > max_surface_jump
+            ):
+                continue
+
+            polygons.append(
+                np.asarray(
+                    [
+                        [I[i, j], J[i, j], z[0]],
+                        [I[i + 1, j], J[i + 1, j], z[1]],
+                        [I[i + 1, j + 1], J[i + 1, j + 1], z[2]],
+                        [I[i, j + 1], J[i, j + 1], z[3]],
+                    ],
+                    dtype=float,
+                )
+            )
+
+    return polygons
+
+
+
+def _figure3_terminal_polygon(policy: np.ndarray) -> list[np.ndarray]:
+    """Return the unrestricted i + k = G terminal plane used in Figure 3."""
+
+    if policy.shape[2] != policy.shape[0]:
+        return []
+
+    i_max = float(policy.shape[0])
+    j_max = float(policy.shape[1])
+    k_max = float(policy.shape[2])
+
+    return [
+        np.asarray(
+            [
+                [0.0, 0.0, k_max],
+                [0.0, j_max, k_max],
+                [i_max, j_max, 0.0],
+                [i_max, 0.0, 0.0],
+            ],
+            dtype=float,
+        )
+    ]
+
+
+
+def _figure3_interface_face_polygon(
+    i: int,
+    j: int,
+    k: int,
+    axis: int,
+) -> np.ndarray:
+    x0, x1 = float(i), float(i + 1)
+    y0, y1 = float(j), float(j + 1)
+    z0, z1 = float(k), float(k + 1)
+
+    if axis == 0:
+        x = x1
+        return np.asarray(
+            [[x, y0, z0], [x, y1, z0], [x, y1, z1], [x, y0, z1]],
+            dtype=float,
+        )
+
+    if axis == 1:
+        y = y1
+        return np.asarray(
+            [[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1]],
+            dtype=float,
+        )
+
+    z = z1
+    return np.asarray(
+        [[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]],
+        dtype=float,
+    )
+
+
+
+def _figure3_policy_interface_polygons(
+    policy: np.ndarray,
+    max_faces: Optional[int] = None,
+    include_ij_walls: bool = False,
+    include_k_walls: bool = True,
+    exclude_terminal_region: bool = True,
+) -> list[np.ndarray]:
+    if policy.ndim != 3:
+        raise ValueError("policy must be a 3D array")
+
+    G_i, G_j, G_k = (int(x) for x in policy.shape)
+    polygons: list[np.ndarray] = []
+
+    axes: list[int] = []
+    if include_ij_walls:
+        axes.extend([0, 1])
+    if include_k_walls:
+        axes.append(2)
+
+    for axis in axes:
+        upper = [G_i, G_j, G_k]
+        upper[axis] -= 1
+
+        for i in range(upper[0]):
+            for j in range(upper[1]):
+                for k in range(upper[2]):
+                    current = int(policy[i, j, k])
+
+                    if current < 0:
+                        continue
+
+                    ni, nj, nk = i, j, k
+                    if axis == 0:
+                        ni += 1
+                    elif axis == 1:
+                        nj += 1
+                    else:
+                        nk += 1
+
+                    neighbour = int(policy[ni, nj, nk])
+
+                    if neighbour < 0:
+                        continue
+
+                    if current == neighbour:
+                        continue
+
+                    if exclude_terminal_region and G_i == G_k:
+                        if i + k >= G_i or ni + nk >= G_i:
+                            continue
+
+                    polygons.append(
+                        _figure3_interface_face_polygon(
+                            i,
+                            j,
+                            k,
+                            axis=axis,
+                        )
+                    )
+
+    if max_faces is not None and len(polygons) > max_faces:
+        idx = np.linspace(0, len(polygons) - 1, max_faces).astype(int)
+        polygons = [polygons[int(x)] for x in idx]
+
+    return polygons
+
+
+
 def _split_point_segments(points: np.ndarray) -> list[np.ndarray]:
     """Split sorted ``(i,k)`` points where adjacent player scores are not contiguous."""
 
@@ -263,6 +519,7 @@ def _split_point_segments(points: np.ndarray) -> list[np.ndarray]:
     segments.append(points[start:])
 
     return segments
+
 
 
 def _cross_section_transition_segments(
@@ -331,6 +588,7 @@ def _cross_section_transition_segments(
     return transition_points, segments
 
 
+
 def _terminal_boundary_segment(policy: np.ndarray) -> np.ndarray:
     """Return the ``i + k = G`` boundary visible in unrestricted Pig figures."""
 
@@ -342,6 +600,7 @@ def _terminal_boundary_segment(policy: np.ndarray) -> np.ndarray:
     ]
 
     return np.asarray(points, dtype=float)
+
 
 
 def _standard_pig_spec_for_policy(policy: np.ndarray) -> dict:
@@ -359,6 +618,7 @@ def _standard_pig_spec_for_policy(policy: np.ndarray) -> dict:
         "gain_outcomes": (2, 3, 4, 5, 6),
         "gain_probabilities": (1.0 / 6.0,) * 5,
     }
+
 
 
 def cross_section_boundary(
@@ -458,6 +718,7 @@ def cross_section_boundary(
     }
 
 
+
 def continue_mask(policy: np.ndarray) -> np.ndarray:
     """Return a Boolean mask for states where continuing is optimal.
 
@@ -470,6 +731,7 @@ def continue_mask(policy: np.ndarray) -> np.ndarray:
     """
 
     return policy == 1
+
 
 
 def hold_mask(policy: np.ndarray) -> np.ndarray:
@@ -513,6 +775,7 @@ def _actual_to_value_state(actual: ActualState) -> State:
     return (score0, score1, turn_total)
 
 
+
 def _expand_actual_state(
     spec: dict,
     policy: np.ndarray,
@@ -547,7 +810,7 @@ def _expand_actual_state(
         if score0 + k >= G:
             return []
 
-        if not vi.is_valid_state(spec, score0, score1, k, restricted_k = restricted_k):
+        if not vi.is_valid_state(spec, score0, score1, k, restricted_k=restricted_k):
             return []
 
         action_code = int(policy[score0, score1, k])
@@ -560,7 +823,7 @@ def _expand_actual_state(
         if opponent_mode == "any":
             actions = ["continue", "hold"]
         elif opponent_mode == "same_policy":
-            if not vi.is_valid_state(spec, score1, score0, k):
+            if not vi.is_valid_state(spec, score1, score0, k, restricted_k=restricted_k):
                 return []
             action_code = int(policy[score1, score0, k])
             actions = ["continue"] if action_code == 1 else ["hold"]
@@ -597,6 +860,7 @@ def _expand_actual_state(
                         next_states.append((score0, score1, new_k, 1))
 
     return next_states
+
 
 
 def reachable_states_for_optimal_player(
@@ -640,10 +904,10 @@ def reachable_states_for_optimal_player(
         actual = queue.popleft()
         score0, score1, k, player = actual
 
-        if player == 0 and vi.is_valid_state(spec, score0, score1, k, restricted_k = restricted_k):
+        if player == 0 and vi.is_valid_state(spec, score0, score1, k, restricted_k=restricted_k):
             reachable[score0, score1, k] = True
 
-        for nxt in _expand_actual_state(spec, policy, actual, opponent_mode, restricted_k = restricted_k):
+        for nxt in _expand_actual_state(spec, policy, actual, opponent_mode, restricted_k=restricted_k):
             s0, s1, tk, p = nxt
 
             # Keep only bounded non-terminal actual states.
@@ -655,6 +919,7 @@ def reachable_states_for_optimal_player(
                 queue.append(nxt)
 
     return reachable
+
 
 
 def reachable_continue_mask(policy: np.ndarray, reachable: np.ndarray) -> np.ndarray:
@@ -673,6 +938,7 @@ def reachable_continue_mask(policy: np.ndarray, reachable: np.ndarray) -> np.nda
     return np.logical_and(reachable, policy == 1)
 
 
+
 def mask_to_points(mask: np.ndarray) -> np.ndarray:
     """Convert a 3D Boolean mask into 3D point coordinates.
 
@@ -686,6 +952,90 @@ def mask_to_points(mask: np.ndarray) -> np.ndarray:
 
     coords = np.argwhere(mask)
     return coords.astype(float)
+
+
+
+def _voxel_face_polygon(
+    i: int,
+    j: int,
+    k: int,
+    axis: int,
+    positive_side: bool,
+) -> np.ndarray:
+    """Return one exposed voxel face as a 3D quadrilateral."""
+
+    x0, x1 = float(i), float(i + 1)
+    y0, y1 = float(j), float(j + 1)
+    z0, z1 = float(k), float(k + 1)
+
+    if axis == 0:
+        x = x1 if positive_side else x0
+        return np.asarray(
+            [[x, y0, z0], [x, y1, z0], [x, y1, z1], [x, y0, z1]],
+            dtype=float,
+        )
+
+    if axis == 1:
+        y = y1 if positive_side else y0
+        return np.asarray(
+            [[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1]],
+            dtype=float,
+        )
+
+    z = z1 if positive_side else z0
+    return np.asarray(
+        [[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]],
+        dtype=float,
+    )
+
+
+
+def _mask_surface_faces(
+    mask: np.ndarray,
+    max_faces: Optional[int] = None,
+) -> list[np.ndarray]:
+    """Return exposed faces for a 3D Boolean mask."""
+
+    mask_array = np.asarray(mask, dtype=bool)
+
+    if mask_array.ndim != 3:
+        raise ValueError("mask must be a 3D array")
+
+    padded = np.pad(mask_array, 1, mode="constant", constant_values=False)
+    interior = tuple(slice(1, -1) for _ in range(3))
+    current = padded[interior]
+    faces: list[np.ndarray] = []
+
+    for axis in range(3):
+        for positive_side in (False, True):
+            neighbor_slice = [slice(1, -1)] * 3
+
+            if positive_side:
+                neighbor_slice[axis] = slice(2, None)
+            else:
+                neighbor_slice[axis] = slice(None, -2)
+
+            exposed = np.logical_and(
+                current,
+                np.logical_not(padded[tuple(neighbor_slice)]),
+            )
+
+            for i, j, k in np.argwhere(exposed):
+                faces.append(
+                    _voxel_face_polygon(
+                        int(i),
+                        int(j),
+                        int(k),
+                        axis=axis,
+                        positive_side=positive_side,
+                    )
+                )
+
+    if max_faces is not None and len(faces) > max_faces:
+        idx = np.linspace(0, len(faces) - 1, max_faces).astype(int)
+        faces = [faces[int(x)] for x in idx]
+
+    return faces
 
 
 # ---------------------------------------------------------------------
@@ -710,12 +1060,21 @@ def figure2_data_from_result(result: dict) -> dict[str, list[float]]:
     return trace_to_table(result.get("trace", {}))
 
 
-def figure3_boundary_data(policy: np.ndarray) -> dict[str, np.ndarray]:
+
+def figure3_boundary_data(
+    policy: np.ndarray,
+    include_terminal_boundary: Optional[bool] = None,
+) -> dict[str, object]:
     """Extract Figure 3 roll/hold boundary data.
 
     Args:
         policy:
             Policy table.
+        include_terminal_boundary:
+            Whether to include the i + k = G plane visible in the paper's
+            unrestricted Figure 3. If omitted, it is included when the policy
+            has no invalid entries and the score and turn-total dimensions
+            match.
 
     Returns:
         Dictionary with:
@@ -727,18 +1086,39 @@ def figure3_boundary_data(policy: np.ndarray) -> dict[str, np.ndarray]:
                 Boundary turn total surface.
             points:
                 Boundary points as rows (i,j,k).
+            transition_surfaces:
+                Separate k-direction action-change sheets grouped by
+                transition order.
+            transition_points:
+                Rows ``(i, j, k, from_action, to_action, transition_order)``.
     """
 
     B = hold_boundary(policy)
     G = B.shape[0]
     I, J = np.meshgrid(np.arange(G), np.arange(G), indexing="ij")
+    transition_surfaces, transition_points = _figure3_transition_surfaces(policy)
+
+    if include_terminal_boundary is None:
+        include_terminal_boundary = (
+            policy.shape[0] == policy.shape[2]
+            and not np.any(policy < 0)
+        )
+
+    if include_terminal_boundary:
+        terminal_polygons = _figure3_terminal_polygon(policy)
+    else:
+        terminal_polygons = []
 
     return {
         "I": I,
         "J": J,
         "K": B,
         "points": boundary_points(policy),
+        "transition_surfaces": transition_surfaces,
+        "transition_points": transition_points,
+        "terminal_polygons": terminal_polygons,
     }
+
 
 
 def figure4_cross_section_data(
@@ -787,6 +1167,7 @@ def figure4_cross_section_data(
 
 
 
+
 def figure5_reachable_data(
     spec: dict,
     policy: np.ndarray,
@@ -815,13 +1196,14 @@ def figure5_reachable_data(
         spec,
         policy,
         opponent_mode=opponent_mode,
-        restricted_k = restricted_k,
+        restricted_k=restricted_k,
     )
 
     return {
         "reachable": reachable,
         "points": mask_to_points(reachable),
     }
+
 
 
 def figure6_reachable_continue_data(
@@ -854,7 +1236,7 @@ def figure6_reachable_continue_data(
         spec,
         policy,
         opponent_mode=opponent_mode,
-        restricted_k = restricted_k,
+        restricted_k=restricted_k,
     )
     rc = reachable_continue_mask(policy, reachable)
 
@@ -863,6 +1245,7 @@ def figure6_reachable_continue_data(
         "reachable_continue": rc,
         "points": mask_to_points(rc),
     }
+
 
 
 def figure7_probability_contour_data(
@@ -894,7 +1277,7 @@ def figure7_probability_contour_data(
     return {
         "V_filled": np.array(V, copy=True),
         "levels": tuple(float(x) for x in levels),
-        "valid_mask": vi.valid_state_mask(spec, restricted_k = restricted_k),
+        "valid_mask": vi.valid_state_mask(spec, restricted_k=restricted_k),
     }
 
 
@@ -918,6 +1301,99 @@ def _get_pyplot():
 
     import matplotlib.pyplot as plt
     return plt
+
+
+
+def _add_surface_collection(
+    ax,
+    polygons: list[np.ndarray],
+    color: str,
+    alpha: float,
+):
+    """Add shaded quadrilateral polygons to a 3D Matplotlib axis."""
+
+    if not polygons:
+        return
+
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+    from matplotlib.colors import LightSource
+
+    try:
+        collection = Poly3DCollection(
+            polygons,
+            facecolors=color,
+            linewidths=0,
+            alpha=alpha,
+            antialiaseds=False,
+            shade=True,
+            lightsource=LightSource(azdeg=315, altdeg=35),
+            zsort="average",
+        )
+    except TypeError:
+        collection = Poly3DCollection(
+            polygons,
+            facecolors=color,
+            linewidths=0,
+            alpha=alpha,
+            antialiaseds=False,
+            zsort="average",
+        )
+
+    collection.set_edgecolor("none")
+    ax.add_collection3d(collection)
+
+
+
+def _add_flat_terminal_plane(
+    ax,
+    polygons: list[np.ndarray],
+    color: str,
+    alpha: float,
+):
+    """Add a flat transparent terminal plane without lighting or shading."""
+
+    if not polygons:
+        return
+
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+    from matplotlib.colors import to_rgba
+
+    rgba = to_rgba(color, alpha)
+    collection = Poly3DCollection(
+        polygons,
+        facecolors=[rgba] * len(polygons),
+        edgecolors="none",
+        linewidths=0,
+        antialiaseds=False,
+        zsort="min",
+    )
+    collection.set_edgecolor("none")
+    ax.add_collection3d(collection)
+
+
+
+def _finish_3d_state_plot(
+    ax,
+    shape: tuple[int, int, int],
+    title: Optional[str],
+):
+    """Apply common axes settings for 3D state-space plots."""
+
+    ax.set_xlabel("Player 1 Score (i)")
+    ax.set_ylabel("Player 2 Score (j)")
+    ax.set_zlabel("Turn Total (k)")
+    ax.set_xlim(0, shape[0])
+    ax.set_ylim(0, shape[1])
+    ax.set_zlim(0, shape[2])
+
+    if hasattr(ax, "set_box_aspect"):
+        ax.set_box_aspect(shape)
+
+    if title:
+        ax.set_title(title)
+
+    return ax
+
 
 
 def plot_figure2_piglet_trace(
@@ -961,12 +1437,19 @@ def plot_figure2_piglet_trace(
     return ax
 
 
+
 def plot_figure3_policy_boundary(
-    boundary_data: dict[str, np.ndarray],
+    boundary_data: dict[str, object],
     ax=None,
-    title: str = "Roll/Hold Boundary for Optimal Pig Policy",
+    title: Optional[str] = None,
+    boundary_color: str = "#74879B",
+    terminal_color: str = "#DCE4EC",
+    boundary_alpha: float = 0.88,
+    terminal_alpha: float = 0.10,
+    max_faces: Optional[int] = None,
+    max_surface_jump: Optional[float] = None,
 ):
-    """Plot a 3D roll/hold boundary surface.
+    """Plot a paper-style 3D roll/hold boundary surface.
 
     Args:
         boundary_data:
@@ -975,6 +1458,21 @@ def plot_figure3_policy_boundary(
             Optional 3D matplotlib axis.
         title:
             Plot title.
+        boundary_color:
+            Colour for the roll/hold interface.
+        terminal_color:
+            Colour for the i + k = G terminal plane.
+        boundary_alpha:
+            Opacity for the roll/hold interface.
+        terminal_alpha:
+            Opacity for the terminal surface.
+        max_faces:
+            Optional cap on boundary polygons for quick previews. By default
+            all polygons are plotted.
+        max_surface_jump:
+            Maximum local k-range allowed inside one quadrilateral. This keeps
+            separate transition sheets from being bridged by accidental long
+            polygons.
 
     Returns:
         Matplotlib 3D axis.
@@ -986,17 +1484,105 @@ def plot_figure3_policy_boundary(
         fig = plt.figure(figsize=(9, 7))
         ax = fig.add_subplot(111, projection="3d")
 
-    I = boundary_data["I"]
-    J = boundary_data["J"]
-    K = boundary_data["K"]
+    I = np.asarray(boundary_data["I"], dtype=float)
+    J = np.asarray(boundary_data["J"], dtype=float)
+    K = np.asarray(boundary_data["K"], dtype=float)
+    transition_points = np.asarray(
+        boundary_data.get("transition_points", np.empty((0, 6))),
+        dtype=float,
+    )
+    terminal_polygons = list(boundary_data.get("terminal_polygons", []))
+    boundary_points_array = np.asarray(
+        boundary_data.get("points", np.empty((0, 3))),
+        dtype=float,
+    )
 
-    ax.plot_surface(I, J, K, linewidth=0, alpha=0.75)
+    max_i = float(I.shape[0])
+    max_j = float(J.shape[1])
+    max_k = float(K.shape[0])
+
+    _add_flat_terminal_plane(
+        ax,
+        terminal_polygons,
+        color=terminal_color,
+        alpha=terminal_alpha,
+    )
+
+    finite = np.isfinite(K)
+    if finite.any():
+        surface_K = np.ma.masked_invalid(K)
+        ax.plot_surface(
+            I,
+            J,
+            surface_K,
+            color=boundary_color,
+            edgecolor="none",
+            linewidth=0,
+            alpha=min(float(boundary_alpha), 0.42),
+            antialiased=False,
+            shade=False,
+            rstride=1,
+            cstride=1,
+        )
+
+    if transition_points.size:
+        points = transition_points[:, :3]
+
+        if max_faces is not None and points.shape[0] > max_faces:
+            idx = np.linspace(0, points.shape[0] - 1, max_faces).astype(int)
+            points = points[idx]
+
+        ax.scatter(
+            points[:, 0],
+            points[:, 1],
+            points[:, 2],
+            s=1.6,
+            marker="s",
+            color="#566577",
+            alpha=0.72,
+            depthshade=False,
+            linewidths=0,
+        )
+
+    if boundary_points_array.size:
+        if max_faces is not None and boundary_points_array.shape[0] > max_faces:
+            idx = np.linspace(0, boundary_points_array.shape[0] - 1, max_faces).astype(int)
+            boundary_points_array = boundary_points_array[idx]
+
+        ax.scatter(
+            boundary_points_array[:, 0],
+            boundary_points_array[:, 1],
+            boundary_points_array[:, 2],
+            s=2.2,
+            marker="s",
+            color="#4E5B6A",
+            alpha=0.92,
+            depthshade=False,
+            linewidths=0,
+        )
+
     ax.set_xlabel("Player 1 Score (i)")
     ax.set_ylabel("Player 2 Score (j)")
     ax.set_zlabel("Turn Total (k)")
-    ax.set_title(title)
+    ax.set_xlim(0, max_i)
+    ax.set_ylim(0, max_j)
+    ax.set_zlim(0, max_k)
+    if hasattr(ax, "set_box_aspect"):
+        ax.set_box_aspect((max_i, max_j, max_k))
+
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.pane.set_facecolor((1.0, 1.0, 1.0, 0.0))
+        axis.pane.set_edgecolor("#c8c8c8")
+        axis._axinfo["grid"]["color"] = (0.82, 0.82, 0.82, 1.0)
+        axis._axinfo["grid"]["linewidth"] = 0.8
+
+    ax.grid(True)
+
+    if title:
+        ax.set_title(title)
 
     return ax
+
 
 
 def plot_figure4_cross_section(
@@ -1182,13 +1768,15 @@ def plot_figure4_cross_section(
 
     return ax
 
+
 def plot_figure5_reachable_states(
     reachable_data: dict[str, np.ndarray],
     ax=None,
     max_points: Optional[int] = 50_000,
+    surface: bool = True,
     title: str = "States Reachable by an Optimal Pig Player",
 ):
-    """Plot reachable states as a 3D point cloud.
+    """Plot reachable states as a 3D surface, with scatter fallback.
 
     Args:
         reachable_data:
@@ -1196,7 +1784,9 @@ def plot_figure5_reachable_states(
         ax:
             Optional 3D matplotlib axis.
         max_points:
-            Optional maximum number of points to plot for speed.
+            Optional maximum number of faces or points to plot for speed.
+        surface:
+            Whether to draw the exposed surface of the reachable mask.
         title:
             Plot title.
 
@@ -1209,6 +1799,15 @@ def plot_figure5_reachable_states(
     if ax is None:
         fig = plt.figure(figsize=(9, 7))
         ax = fig.add_subplot(111, projection="3d")
+
+    reachable = reachable_data.get("reachable")
+
+    if surface and reachable is not None:
+        reachable_array = np.asarray(reachable, dtype=bool)
+        faces = _mask_surface_faces(reachable_array, max_faces=max_points)
+        _add_surface_collection(ax, faces, color="#8a8a8a", alpha=0.55)
+
+        return _finish_3d_state_plot(ax, reachable_array.shape, title)
 
     points = reachable_data["points"]
 
@@ -1219,21 +1818,19 @@ def plot_figure5_reachable_states(
     if len(points) > 0:
         ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=1, alpha=0.4)
 
-    ax.set_xlabel("Player 1 Score (i)")
-    ax.set_ylabel("Player 2 Score (j)")
-    ax.set_zlabel("Turn Total (k)")
-    ax.set_title(title)
+    shape = tuple(int(x) for x in np.asarray(reachable).shape) if reachable is not None else (100, 100, 100)
+    return _finish_3d_state_plot(ax, shape, title)
 
-    return ax
 
 
 def plot_figure6_reachable_continue_states(
     reachable_continue_data: dict[str, np.ndarray],
     ax=None,
     max_points: Optional[int] = 50_000,
+    surface: bool = True,
     title: str = "Reachable States Where Continuing is Optimal",
 ):
-    """Plot reachable states where continuing is optimal.
+    """Plot reachable-roll states as a 3D surface, with scatter fallback.
 
     Args:
         reachable_continue_data:
@@ -1241,7 +1838,9 @@ def plot_figure6_reachable_continue_states(
         ax:
             Optional 3D matplotlib axis.
         max_points:
-            Optional maximum number of points to plot for speed.
+            Optional maximum number of faces or points to plot for speed.
+        surface:
+            Whether to draw the exposed surface of the reachable-roll mask.
         title:
             Plot title.
 
@@ -1255,6 +1854,15 @@ def plot_figure6_reachable_continue_states(
         fig = plt.figure(figsize=(9, 7))
         ax = fig.add_subplot(111, projection="3d")
 
+    reachable_continue = reachable_continue_data.get("reachable_continue")
+
+    if surface and reachable_continue is not None:
+        reachable_continue_array = np.asarray(reachable_continue, dtype=bool)
+        faces = _mask_surface_faces(reachable_continue_array, max_faces=max_points)
+        _add_surface_collection(ax, faces, color="#5f5f5f", alpha=0.6)
+
+        return _finish_3d_state_plot(ax, reachable_continue_array.shape, title)
+
     points = reachable_continue_data["points"]
 
     if max_points is not None and len(points) > max_points:
@@ -1264,12 +1872,11 @@ def plot_figure6_reachable_continue_states(
     if len(points) > 0:
         ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=1, alpha=0.4)
 
-    ax.set_xlabel("Player 1 Score (i)")
-    ax.set_ylabel("Player 2 Score (j)")
-    ax.set_zlabel("Turn Total (k)")
-    ax.set_title(title)
+    reachable = reachable_continue_data.get("reachable")
+    shape_source = reachable_continue if reachable_continue is not None else reachable
+    shape = tuple(int(x) for x in np.asarray(shape_source).shape) if shape_source is not None else (100, 100, 100)
+    return _finish_3d_state_plot(ax, shape, title)
 
-    return ax
 
 
 def _plot_probability_contour_with_marching_cubes(
@@ -1277,6 +1884,8 @@ def _plot_probability_contour_with_marching_cubes(
     level: float,
     ax,
     valid_mask: np.ndarray,
+    color: str = "#7a7a7a",
+    alpha: float = 0.28,
 ):
     """Plot one probability contour using marching cubes.
 
@@ -1316,8 +1925,93 @@ def _plot_probability_contour_with_marching_cubes(
         faces,
         verts[:, 2],
         linewidth=0.2,
-        alpha=0.35,
+        color=color,
+        alpha=alpha,
     )
+
+
+
+def _level_surface_face_polygon(
+    i: int,
+    j: int,
+    k: int,
+    axis: int,
+    coordinate: float,
+) -> np.ndarray:
+    """Return an approximate level-crossing face for a 3D scalar field."""
+
+    x0, x1 = float(i), float(i + 1)
+    y0, y1 = float(j), float(j + 1)
+    z0, z1 = float(k), float(k + 1)
+
+    if axis == 0:
+        x = float(coordinate)
+        return np.asarray(
+            [[x, y0, z0], [x, y1, z0], [x, y1, z1], [x, y0, z1]],
+            dtype=float,
+        )
+
+    if axis == 1:
+        y = float(coordinate)
+        return np.asarray(
+            [[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1]],
+            dtype=float,
+        )
+
+    z = float(coordinate)
+    return np.asarray(
+        [[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]],
+        dtype=float,
+    )
+
+
+
+def _level_surface_faces(
+    V: np.ndarray,
+    level: float,
+    valid_mask: np.ndarray,
+    max_faces: Optional[int] = 20_000,
+) -> list[np.ndarray]:
+    """Return a lightweight surface approximation for one probability level."""
+
+    values = np.asarray(V, dtype=float)
+    valid = np.asarray(valid_mask, dtype=bool)
+    faces: list[np.ndarray] = []
+
+    for axis in range(3):
+        first_slice = [slice(None)] * 3
+        second_slice = [slice(None)] * 3
+        first_slice[axis] = slice(0, values.shape[axis] - 1)
+        second_slice[axis] = slice(1, values.shape[axis])
+
+        v0 = values[tuple(first_slice)]
+        v1 = values[tuple(second_slice)]
+        valid_pair = np.logical_and(valid[tuple(first_slice)], valid[tuple(second_slice)])
+        delta = v1 - v0
+        crosses = np.logical_and(valid_pair, delta != 0)
+        crosses = np.logical_and(crosses, (v0 - level) * (v1 - level) <= 0)
+
+        for i, j, k in np.argwhere(crosses):
+            left = float(v0[i, j, k])
+            right = float(v1[i, j, k])
+            t = (float(level) - left) / (right - left)
+            coordinate = [float(i), float(j), float(k)][axis] + t
+            faces.append(
+                _level_surface_face_polygon(
+                    int(i),
+                    int(j),
+                    int(k),
+                    axis=axis,
+                    coordinate=coordinate,
+                )
+            )
+
+    if max_faces is not None and len(faces) > max_faces:
+        idx = np.linspace(0, len(faces) - 1, max_faces).astype(int)
+        faces = [faces[int(x)] for x in idx]
+
+    return faces
+
 
 
 def _plot_probability_contour_fallback(
@@ -1325,10 +2019,11 @@ def _plot_probability_contour_fallback(
     level: float,
     ax,
     valid_mask: np.ndarray,
-    tolerance: float = 0.005,
-    max_points: int = 20_000,
+    color: str = "#7a7a7a",
+    alpha: float = 0.28,
+    max_faces: Optional[int] = 20_000,
 ):
-    """Fallback contour plot using near-level point cloud.
+    """Fallback contour plot using approximate level-crossing surfaces.
 
     Args:
         V:
@@ -1339,30 +2034,33 @@ def _plot_probability_contour_fallback(
             3D matplotlib axis.
         valid_mask:
             Valid-state mask.
-        tolerance:
-            Points satisfying |V-level| <= tolerance are shown.
-        max_points:
-            Maximum number of points plotted.
+        color:
+            Surface color.
+        alpha:
+            Surface opacity.
+        max_faces:
+            Maximum number of faces plotted.
 
     Returns:
         None.
     """
 
-    near = np.logical_and(valid_mask, np.abs(V - level) <= tolerance)
-    points = np.argwhere(near)
+    faces = _level_surface_faces(
+        V=V,
+        level=level,
+        valid_mask=valid_mask,
+        max_faces=max_faces,
+    )
 
-    if len(points) > max_points:
-        idx = np.linspace(0, len(points) - 1, max_points).astype(int)
-        points = points[idx]
+    _add_surface_collection(ax, faces, color=color, alpha=alpha)
 
-    if len(points) > 0:
-        ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=1, alpha=0.35)
 
 
 def plot_figure7_probability_contours(
     contour_data: dict[str, object],
     ax=None,
     title: str = "Win Probability Contours for Optimal Play",
+    max_faces_per_level: Optional[int] = 20_000,
 ):
     """Plot probability contours for optimal play.
 
@@ -1373,6 +2071,8 @@ def plot_figure7_probability_contours(
             Optional 3D matplotlib axis.
         title:
             Plot title.
+        max_faces_per_level:
+            Maximum number of fallback surface faces per probability level.
 
     Returns:
         Matplotlib 3D axis.
@@ -1380,7 +2080,8 @@ def plot_figure7_probability_contours(
     Notes:
         The paper shows contours at 3%, 9%, 27%, and 81%. This function tries
         to use marching cubes for surface contours. If scikit-image is not
-        installed, it falls back to plotting near-level point clouds.
+        installed, it uses a lightweight surface approximation rather than a
+        point cloud.
     """
 
     plt = _get_pyplot()
@@ -1392,14 +2093,19 @@ def plot_figure7_probability_contours(
     V = contour_data["V_filled"]
     levels = contour_data["levels"]
     valid_mask = contour_data["valid_mask"]
+    colors = ("#bdbdbd", "#969696", "#737373", "#525252")
 
-    for level in levels:
+    for idx, level in enumerate(levels):
+        color = colors[idx % len(colors)]
+
         try:
             _plot_probability_contour_with_marching_cubes(
                 V=V,
                 level=float(level),
                 ax=ax,
                 valid_mask=valid_mask,
+                color=color,
+                alpha=0.30,
             )
         except Exception:
             _plot_probability_contour_fallback(
@@ -1407,14 +2113,12 @@ def plot_figure7_probability_contours(
                 level=float(level),
                 ax=ax,
                 valid_mask=valid_mask,
+                color=color,
+                alpha=0.30,
+                max_faces=max_faces_per_level,
             )
 
-    ax.set_xlabel("Player 1 Score (i)")
-    ax.set_ylabel("Player 2 Score (j)")
-    ax.set_zlabel("Turn Total (k)")
-    ax.set_title(title)
-
-    return ax
+    return _finish_3d_state_plot(ax, tuple(int(x) for x in np.asarray(V).shape), title)
 
 
 # ---------------------------------------------------------------------
@@ -1441,7 +2145,7 @@ def summarize_solution(spec: dict, V: np.ndarray, policy: np.ndarray, restricted
             n_hold_states
     """
 
-    valid = vi.valid_state_mask(spec, restricted_k = restricted_k)
+    valid = vi.valid_state_mask(spec, restricted_k=restricted_k)
 
     return {
         "target_score": vi.target_score(spec),
@@ -1450,6 +2154,7 @@ def summarize_solution(spec: dict, V: np.ndarray, policy: np.ndarray, restricted
         "n_continue_states": int(np.logical_and(valid, policy == 1).sum()),
         "n_hold_states": int(np.logical_and(valid, policy == 0).sum()),
     }
+
 
 
 def check_pig_start_probability(
