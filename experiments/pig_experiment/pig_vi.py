@@ -7,13 +7,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pickle
 
-import sys
-sys.path.append('../../')
-
-from src.optimal_pig import piglet
-from src.optimal_pig import pig
-from src.optimal_pig import value_iteration_fun as vi
-from src.optimal_pig import analysis_helpers as ah
+import optimal_pig as op
 
 print("Imported modules successfully.")
 
@@ -23,9 +17,9 @@ RUN_FULL_PIG = True
 restricted_k = False
 
 if RUN_FULL_PIG:
-    full_pig_spec = pig.make_spec(target_score=100)
+    full_pig_spec = op.make_spec(target_score=100)
 
-    full_result = vi.partitioned_value_iteration(
+    full_result = op.partitioned_value_iteration(
         full_pig_spec,
         tol=1e-12,
         max_local_iterations=100_000,
@@ -40,10 +34,10 @@ if RUN_FULL_PIG:
     print("Full Pig converged:", full_result["converged"])
     print("P[0,0,0] =", full_V[0, 0, 0])
 
-    err = ah.check_pig_start_probability(full_V, expected=0.5306, atol=1e-3)
+    err = op.check_pig_start_probability(full_V, expected=0.5306, atol=1e-3)
     print("Start-probability check passed. Absolute error:", err)
 
-    full_summary = ah.summarize_solution(full_pig_spec, full_V, full_policy, restricted_k = restricted_k)
+    full_summary = op.summarize_solution(full_pig_spec, full_V, full_policy, restricted_k = restricted_k)
     print("Full Pig summary:")
     print(full_summary)
 else:

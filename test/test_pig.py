@@ -2,7 +2,7 @@
 
 These tests focus on deterministic game rules rather than value-iteration
 output. They use explicit submodule imports to avoid the package-level
-``import optimal_pig as pig`` name-collision risk.
+``import optimal_pig as pig`` name-collision risk as well as the lazy import function restrictions.
 """
 
 from __future__ import annotations
