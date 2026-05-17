@@ -29,12 +29,21 @@ Now feel free to explore and edit the repository. When finished, the virtual env
 ```
 deactivate
 ```
+If choosing to rerun the example and experiment notebooks, sometimes despite the use of a virtual environment jupyter does not use the required kernel. In this case it cannot detect the optimal_pig package and the notebook cannot be run. If this occurs, or to preempt this issue, after activating the virtual environment run
+```
+python -m ipykernel install --user --name optimal_pig_env --display-name "Python (optimal_pig)"
+```
+This registers the correct virtual environment kernel for use. Then after reopening the notebook, change the kernel to select
+```
+Python (optimal_pig)
+```
+The notebooks should now run without issue.
 
 ### Installing the Package
 
-To simply use the package without the ability to edit or explore its functionality, install it for use in python by
+To simply use the package without the ability to edit or explore its functionality, install it for use in python by running the following from the command line
 ```
-python -m pip install 'https://github.com/C-Rigby/Game_of_Pig_Assessment_3.git'
+python -m pip install 'git+https://github.com/C-Rigby/Game_of_Pig_Assessment_3.git'
 ```
 
 ## Repository Structure

@@ -2,6 +2,7 @@ from .pig import (
     make_hold_at_policy,
     play_pig,
     make_spec,
+    hold_at_20_policy
 )
 
 from .piglet import (
@@ -38,6 +39,8 @@ from .analysis_helpers import (
     plot_figure7_probability_contours,
     summarize_solution,
     check_pig_start_probability,
+    hold_boundary,
+    add_3D_contour_legend
 )
 
 __version__ = "0.1.0"
@@ -47,6 +50,7 @@ __all__ = [
     "make_hold_at_policy",
     "play_pig",
     "make_spec",
+    "hold_at_20_policy",
 
     # piglet
     "make_hold_at_policy_piglet",
@@ -80,4 +84,6 @@ __all__ = [
     "plot_figure7_probability_contours",
     "summarize_solution",
     "check_pig_start_probability",
+    "hold_boundary",
+    "add_3D_contour_legend"
 ]
