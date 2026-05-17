@@ -13,7 +13,7 @@ name = "optimal_pig"
 version = "0.1.0"
 
 authors = [
-  { name="James Marriner", email="j.marriner1@lancaster.ac.uk"},
+  { name="James Marriner"},
 ]
 description = "Implements Value Iteration Algorithm for the Dice Game Pig"
 

@@ -46,7 +46,7 @@ class PigletState:
     winner: Optional[int] = None
 
 
-def make_spec(target_score: int = 2) -> dict:
+def piglet_make_spec(target_score: int = 2) -> dict:
     """Return the value-iteration specification for Piglet.
 
     Args:
@@ -80,7 +80,7 @@ def make_spec(target_score: int = 2) -> dict:
     }
 
 
-def initial_state(first_player: int = 0) -> PigletState:
+def piglet_initial_state(first_player: int = 0) -> PigletState:
     """Create an initial Piglet game state.
 
     Args:
@@ -102,7 +102,7 @@ def initial_state(first_player: int = 0) -> PigletState:
     )
 
 
-def legal_actions(state: PigletState) -> tuple[Action, ...]:
+def piglet_legal_actions(state: PigletState) -> tuple[Action, ...]:
     """Return legal actions in the current state.
 
     Args:
@@ -119,7 +119,7 @@ def legal_actions(state: PigletState) -> tuple[Action, ...]:
     return ("flip", "hold")
 
 
-def step(
+def piglet_step(
     state: PigletState,
     action: Action,
     rng: random.Random,
@@ -150,7 +150,7 @@ def step(
     if state.winner is not None:
         return state
 
-    if action not in legal_actions(state):
+    if action not in piglet_legal_actions(state):
         raise ValueError(f"Illegal Piglet action: {action!r}.")
 
     p = state.current_player
@@ -194,7 +194,7 @@ def step(
     )
 
 
-def play_game(
+def play_piglet(
     policy0: Policy,
     policy1: Policy,
     target_score: int = 2,
@@ -223,7 +223,7 @@ def play_game(
     """
 
     rng = random.Random(seed)
-    state = initial_state(first_player=first_player)
+    state = piglet_initial_state(first_player=first_player)
     policies = (policy0, policy1)
 
     for _ in range(max_steps):
@@ -231,12 +231,12 @@ def play_game(
             return state
 
         action = policies[state.current_player](state, rng)
-        state = step(state, action, rng, target_score=target_score)
+        state = piglet_step(state, action, rng, target_score=target_score)
 
     raise RuntimeError("Piglet game exceeded max_steps; check the policies.")
 
 
-def make_hold_at_policy(threshold: int, target_score: int = 2) -> Policy:
+def make_hold_at_policy_piglet(threshold: int, target_score: int = 2) -> Policy:
     """Create a simple threshold policy for Piglet.
 
     Args:
@@ -246,7 +246,7 @@ def make_hold_at_policy(threshold: int, target_score: int = 2) -> Policy:
             Winning score. The policy also holds if holding wins immediately.
 
     Returns:
-        A policy function compatible with ``play_game``.
+        A policy function compatible with ``play_piglet``.
     """
 
     if threshold < 0:
@@ -263,7 +263,7 @@ def make_hold_at_policy(threshold: int, target_score: int = 2) -> Policy:
     return policy
 
 
-def make_always_flip_policy(target_score: int = 2) -> Policy:
+def make_always_flip_policy_piglet(target_score: int = 2) -> Policy:
     """Create a policy that flips unless holding immediately wins.
 
     Args:
@@ -271,7 +271,7 @@ def make_always_flip_policy(target_score: int = 2) -> Policy:
             Winning score.
 
     Returns:
-        A policy function compatible with ``play_game``.
+        A policy function compatible with ``play_piglet``.
     """
 
     def policy(state: PigletState, rng: random.Random) -> Action:
