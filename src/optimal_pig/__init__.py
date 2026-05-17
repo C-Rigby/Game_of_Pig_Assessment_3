@@ -40,7 +40,7 @@ from .analysis_helpers import (
     summarize_solution,
     check_pig_start_probability,
     hold_boundary,
-    add_3D_contour_legend
+    add_3d_contour_legend
 )
 
 __version__ = "0.1.0"
@@ -83,7 +83,7 @@ __all__ = [
     "figure7_probability_contour_data",
     "plot_figure7_probability_contours",
     "summarize_solution",
-    "check_pig_start_probability",
+    "check_pig_start_probability",   
     "hold_boundary",
-    "add_3D_contour_legend"
+    "add_3d_contour_legend"
 ]
